@@ -60,10 +60,10 @@ dotnet_style_predefined_type_for_locals_parameters_members = true:warning
 dotnet_style_predefined_type_for_member_access = false:silent
 
 # Parentheses preferences
-dotnet_style_parentheses_in_arithmetic_binary_operators = always_for_clarity:warning
-dotnet_style_parentheses_in_other_binary_operators = always_for_clarity:warning
+dotnet_style_parentheses_in_arithmetic__operators = always_for_clarity:warning
+dotnet_style_parentheses_in_other__operators = always_for_clarity:warning
 dotnet_style_parentheses_in_other_operators = never_if_unnecessary:warning
-dotnet_style_parentheses_in_relational_binary_operators = always_for_clarity:silent
+dotnet_style_parentheses_in_relational__operators = always_for_clarity:silent
 
 # Modifier preferences
 dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
@@ -201,7 +201,7 @@ csharp_space_after_comma = true:warning
 csharp_space_after_dot = false:warning
 csharp_space_after_keywords_in_control_flow_statements = true:warning
 csharp_space_after_semicolon_in_for_statement = true:warning
-csharp_space_around_binary_operators = before_and_after:warning
+csharp_space_around__operators = before_and_after:warning
 csharp_space_around_declaration_statements = false:warning
 csharp_space_before_colon_in_inheritance_clause = true:warning
 csharp_space_before_comma = false:warning
@@ -399,9 +399,9 @@ dotnet_diagnostic.IDE0045.severity = none
 # dotnet_style_prefer_conditional_expression_over_return
 dotnet_diagnostic.IDE0046.severity = none
 
-# dotnet_style_parentheses_in_arithmetic_binary_operators
-# dotnet_style_parentheses_in_relational_binary_operators
-# dotnet_style_parentheses_in_other_binary_operators
+# dotnet_style_parentheses_in_arithmetic__operators
+# dotnet_style_parentheses_in_relational__operators
+# dotnet_style_parentheses_in_other__operators
 # dotnet_style_parentheses_in_other_operators
 dotnet_diagnostic.IDE0047.severity = warning
 dotnet_diagnostic.IDE0048.severity = warning
