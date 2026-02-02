@@ -3,6 +3,7 @@ namespace MyPgsql;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections;
+using System.Collections.Frozen;
 using System.Data;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
@@ -10,6 +11,66 @@ using System.Text;
 
 public sealed class PgDataReader : DbDataReader
 {
+    // PostgreSQL OID constants
+    private const int OidBool = 16;
+    private const int OidBytea = 17;
+    private const int OidInt8 = 20;
+    private const int OidInt2 = 21;
+    private const int OidInt4 = 23;
+    private const int OidText = 25;
+    private const int OidOid = 26;
+    private const int OidFloat4 = 700;
+    private const int OidFloat8 = 701;
+    private const int OidVarchar = 1043;
+    private const int OidChar = 1042;
+    private const int OidDate = 1082;
+    private const int OidTimestamp = 1114;
+    private const int OidTimestampTz = 1184;
+    private const int OidNumeric = 1700;
+    private const int OidUuid = 2950;
+
+    // OID to Type mapping
+    private static readonly FrozenDictionary<int, Type> OidToTypeMap = new Dictionary<int, Type>
+    {
+        [OidBool] = typeof(bool),
+        [OidBytea] = typeof(byte[]),
+        [OidInt8] = typeof(long),
+        [OidInt2] = typeof(short),
+        [OidInt4] = typeof(int),
+        [OidText] = typeof(string),
+        [OidOid] = typeof(int),
+        [OidFloat4] = typeof(float),
+        [OidFloat8] = typeof(double),
+        [OidVarchar] = typeof(string),
+        [OidChar] = typeof(string),
+        [OidDate] = typeof(DateTime),
+        [OidTimestamp] = typeof(DateTime),
+        [OidTimestampTz] = typeof(DateTime),
+        [OidNumeric] = typeof(decimal),
+        [OidUuid] = typeof(Guid),
+    }.ToFrozenDictionary();
+
+    // OID to TypeName mapping
+    private static readonly FrozenDictionary<int, string> OidToTypeNameMap = new Dictionary<int, string>
+    {
+        [OidBool] = "boolean",
+        [OidBytea] = "bytea",
+        [OidInt8] = "bigint",
+        [OidInt2] = "smallint",
+        [OidInt4] = "integer",
+        [OidText] = "text",
+        [OidOid] = "oid",
+        [OidFloat4] = "real",
+        [OidFloat8] = "double precision",
+        [OidVarchar] = "character varying",
+        [OidChar] = "character",
+        [OidDate] = "date",
+        [OidTimestamp] = "timestamp without time zone",
+        [OidTimestampTz] = "timestamp with time zone",
+        [OidNumeric] = "numeric",
+        [OidUuid] = "uuid",
+    }.ToFrozenDictionary();
+
     // PostgreSQL epoch (2000-01-01 00:00:00 UTC)
     private static readonly DateTime PostgresEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
@@ -558,7 +619,23 @@ public sealed class PgDataReader : DbDataReader
     {
         if (IsDBNull(ordinal))
             return DBNull.Value;
-        return GetString(ordinal);
+
+        var typeOid = _columns![ordinal].TypeOid;
+        return typeOid switch
+        {
+            OidBool => GetBoolean(ordinal),
+            OidInt2 => GetInt16(ordinal),
+            OidInt4 or OidOid => GetInt32(ordinal),
+            OidInt8 => GetInt64(ordinal),
+            OidFloat4 => GetFloat(ordinal),
+            OidFloat8 => GetDouble(ordinal),
+            OidNumeric => GetDecimal(ordinal),
+            OidText or OidVarchar or OidChar => GetString(ordinal),
+            OidBytea => GetBytea(ordinal),
+            OidDate or OidTimestamp or OidTimestampTz => GetDateTime(ordinal),
+            OidUuid => GetGuid(ordinal),
+            _ => GetString(ordinal) // フォールバック: 文字列として取得
+        };
     }
 
     public override int GetValues(object[] values)
@@ -566,19 +643,27 @@ public sealed class PgDataReader : DbDataReader
         var count = Math.Min(values.Length, _columnCount);
         for (int i = 0; i < count; i++)
         {
-            values[i] = IsDBNull(i) ? DBNull.Value : GetString(i);
+            values[i] = GetValue(i);
         }
         return count;
     }
 
+    private byte[] GetBytea(int ordinal)
+    {
+        var span = GetValueSpan(ordinal);
+        return span.ToArray();
+    }
+
     public override string GetDataTypeName(int ordinal)
     {
-        return "text";
+        var typeOid = _columns![ordinal].TypeOid;
+        return OidToTypeNameMap.TryGetValue(typeOid, out var typeName) ? typeName : "unknown";
     }
 
     public override Type GetFieldType(int ordinal)
     {
-        return typeof(string);
+        var typeOid = _columns![ordinal].TypeOid;
+        return OidToTypeMap.TryGetValue(typeOid, out var type) ? type : typeof(object);
     }
 
     public override IEnumerator GetEnumerator()

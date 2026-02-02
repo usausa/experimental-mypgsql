@@ -10,6 +10,7 @@ internal static class Program
     {
         const string connectionString = "Host=mysql-server;Port=5432;Database=test;Username=test;Password=test";
 
+#pragma warning disable CA1031
         try
         {
             await using var connection = new PgConnection(connectionString);
@@ -111,7 +112,46 @@ internal static class Program
                 Console.WriteLine();
             }
 
-            // === 7. DELETE (クリーンアップ) ===
+            // === 7. GetValue/GetValues/GetDataTypeName/GetFieldType テスト ===
+            Console.WriteLine("=== GetValue/GetValues/GetDataTypeName/GetFieldType テスト ===");
+            await using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = "SELECT id, name, email, created_at FROM users WHERE id = @id";
+                cmd.Parameters.Add(new PgParameter("@id", DbType.Int32) { Value = 2001 });
+
+                await using var reader = await cmd.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    // カラム情報の確認
+                    Console.WriteLine("カラム情報:");
+                    for (var i = 0; i < reader.FieldCount; i++)
+                    {
+                        Console.WriteLine($"  [{i}] {reader.GetName(i)}: DataTypeName={reader.GetDataTypeName(i)}, FieldType={reader.GetFieldType(i).Name}");
+                    }
+                    Console.WriteLine();
+
+                    // GetValue で型を確認
+                    Console.WriteLine("GetValue による取得:");
+                    for (var i = 0; i < reader.FieldCount; i++)
+                    {
+                        var value = reader.GetValue(i);
+                        Console.WriteLine($"  [{i}] {reader.GetName(i)}: Value={value}, Type={value.GetType().Name}");
+                    }
+                    Console.WriteLine();
+
+                    // GetValues で一括取得
+                    Console.WriteLine("GetValues による一括取得:");
+                    var values = new object[reader.FieldCount];
+                    reader.GetValues(values);
+                    for (var i = 0; i < values.Length; i++)
+                    {
+                        Console.WriteLine($"  [{i}] {reader.GetName(i)}: Value={values[i]}, Type={values[i].GetType().Name}");
+                    }
+                    Console.WriteLine();
+                }
+            }
+
+            // === 8. DELETE (クリーンアップ) ===
             Console.WriteLine("=== DELETE (クリーンアップ) ===");
             await using (var cmd = connection.CreateCommand())
             {
@@ -128,5 +168,6 @@ internal static class Program
             Console.WriteLine($"エラー: {ex.Message}");
             Console.WriteLine(ex.StackTrace);
         }
+#pragma warning restore CA1031
     }
 }
