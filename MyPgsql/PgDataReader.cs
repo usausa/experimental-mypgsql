@@ -407,8 +407,7 @@ public sealed class PgDataReader : DbDataReader
 
         if ((behavior & CommandBehavior.CloseConnection) != 0)
         {
-            // ReSharper disable once MethodHasAsyncOverload
-            connection.Close();
+            await connection.CloseAsync().ConfigureAwait(false);
         }
     }
 
@@ -628,7 +627,9 @@ public sealed class PgDataReader : DbDataReader
                 return i;
             }
         }
+#pragma warning disable CA2201
         throw new IndexOutOfRangeException($"カラム '{name}' が見つかりません");
+#pragma warning restore CA2201
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -696,10 +697,10 @@ public sealed class PgDataReader : DbDataReader
         return new DbEnumerator(this, closeReader: false);
     }
 
-    public override ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
-        Close();
-        return base.DisposeAsync();
+        await CloseAsync().ConfigureAwait(false);
+        await base.DisposeAsync().ConfigureAwait(false);
     }
 
     private static string ParseErrorMessage(ReadOnlySpan<byte> payload)

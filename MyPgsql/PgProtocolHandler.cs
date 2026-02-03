@@ -306,7 +306,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             foreach (var (_, _, oid) in encodedParams)
             {
                 // バイナリフォーマット (1) を指定
-                BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), (short)1);
+                BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), 1);
                 offset += 2;
             }
 
