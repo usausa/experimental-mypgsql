@@ -5,19 +5,37 @@ using System.Data.Common;
 
 public sealed class PgTransaction : DbTransaction
 {
-    private readonly PgConnection _connection;
-    private readonly IsolationLevel _isolationLevel;
-    private bool _completed;
+    private bool completed;
+
+    public new PgConnection Connection { get; }
+
+    protected override DbConnection DbConnection => Connection;
+
+    public override IsolationLevel IsolationLevel { get; }
 
     internal PgTransaction(PgConnection connection, IsolationLevel isolationLevel)
     {
-        _connection = connection;
-        _isolationLevel = isolationLevel;
+        Connection = connection;
+        IsolationLevel = isolationLevel;
     }
 
-    public new PgConnection Connection => _connection;
-    protected override DbConnection DbConnection => _connection;
-    public override IsolationLevel IsolationLevel => _isolationLevel;
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !completed)
+        {
+#pragma warning disable CA1031
+            try
+            {
+                Rollback();
+            }
+            catch
+            {
+                // Ignore
+            }
+#pragma warning restore CA1031
+        }
+        base.Dispose(disposing);
+    }
 
     public override void Commit()
     {
@@ -26,12 +44,14 @@ public sealed class PgTransaction : DbTransaction
 
     public override async Task CommitAsync(CancellationToken cancellationToken = default)
     {
-        if (_completed)
-            throw new InvalidOperationException("トランザクションは既に完了しています");
+        if (completed)
+        {
+            throw new InvalidOperationException("Transaction already completed.");
+        }
 
-        await _connection.Protocol.ExecuteSimpleQueryAsync("COMMIT", cancellationToken);
-        _completed = true;
-        _connection.ClearTransaction();
+        await Connection.Protocol.ExecuteSimpleQueryAsync("COMMIT", cancellationToken).ConfigureAwait(false);
+        completed = true;
+        Connection.ClearTransaction();
     }
 
     public override void Rollback()
@@ -41,43 +61,13 @@ public sealed class PgTransaction : DbTransaction
 
     public override async Task RollbackAsync(CancellationToken cancellationToken = default)
     {
-        if (_completed)
-            throw new InvalidOperationException("トランザクションは既に完了しています");
-
-        await _connection.Protocol.ExecuteSimpleQueryAsync("ROLLBACK", cancellationToken);
-        _completed = true;
-        _connection.ClearTransaction();
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing && !_completed)
+        if (completed)
         {
-            try
-            {
-                Rollback();
-            }
-            catch
-            {
-                // 無視
-            }
+            throw new InvalidOperationException("Transaction already completed.");
         }
-        base.Dispose(disposing);
-    }
 
-    public override async ValueTask DisposeAsync()
-    {
-        if (!_completed)
-        {
-            try
-            {
-                await RollbackAsync();
-            }
-            catch
-            {
-                // 無視
-            }
-        }
-        GC.SuppressFinalize(this);
+        await Connection.Protocol.ExecuteSimpleQueryAsync("ROLLBACK", cancellationToken).ConfigureAwait(false);
+        completed = true;
+        Connection.ClearTransaction();
     }
 }
