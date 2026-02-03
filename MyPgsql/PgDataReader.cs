@@ -80,7 +80,7 @@ public sealed class PgDataReader : DbDataReader
     private readonly CommandBehavior behavior;
     private readonly CancellationToken cancellation;
 
-    private PgColumnInfo[]? columns;
+    private PgColumnInfo[] columns = null!;
     private int fieldCount;
     private bool hasRows;
     private bool firstRowRead;
@@ -88,10 +88,10 @@ public sealed class PgDataReader : DbDataReader
     private bool completed;
 
     // Row data buffer
-    private byte[]? rowBuffer;
+    private byte[] rowBuffer = null!;
     private int rowBaseOffset;
-    private int[]? offsets;
-    private int[]? lengths;
+    private int[] offsets = null!;
+    private int[] lengths = null!;
 
     public override int FieldCount => fieldCount;
 
@@ -347,8 +347,8 @@ public sealed class PgDataReader : DbDataReader
             var len = BinaryPrimitives.ReadInt32BigEndian(payload[currentOffset..]);
             currentOffset += 4;
 
-            offsets![i] = currentOffset;
-            lengths![i] = len;
+            offsets[i] = currentOffset;
+            lengths[i] = len;
 
             if (len > 0)
             {
@@ -387,23 +387,25 @@ public sealed class PgDataReader : DbDataReader
         }
 
         // プールからのバッファを返却
+        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
         if (columns is not null)
         {
             ArrayPool<PgColumnInfo>.Shared.Return(columns);
-            columns = null;
+            columns = null!;
         }
         if (offsets is not null)
         {
             ArrayPool<int>.Shared.Return(offsets);
-            offsets = null;
+            offsets = null!;
         }
         if (lengths is not null)
         {
             ArrayPool<int>.Shared.Return(lengths);
-            lengths = null;
+            lengths = null!;
         }
+        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
 
-        rowBuffer = null;
+        rowBuffer = null!;
 
         if ((behavior & CommandBehavior.CloseConnection) != 0)
         {
@@ -446,19 +448,19 @@ public sealed class PgDataReader : DbDataReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ReadOnlySpan<byte> GetValueSpan(int ordinal)
     {
-        var length = lengths![ordinal];
+        var length = lengths[ordinal];
         if (length == -1)
         {
             throw new InvalidCastException("値がNULLです");
         }
-        return rowBuffer.AsSpan(rowBaseOffset + offsets![ordinal], length);
+        return rowBuffer.AsSpan(rowBaseOffset + offsets[ordinal], length);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsColumn(int ordinal) => columns![ordinal].FormatCode == 1;
+    private bool IsColumn(int ordinal) => columns[ordinal].FormatCode == 1;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override bool IsDBNull(int ordinal) => lengths![ordinal] == -1;
+    public override bool IsDBNull(int ordinal) => lengths[ordinal] == -1;
 
     public override Task<bool> IsDBNullAsync(int ordinal, CancellationToken cancellationToken)
     {
@@ -614,12 +616,12 @@ public sealed class PgDataReader : DbDataReader
 
     public override string GetName(int ordinal)
     {
-        return columns![ordinal].Name;
+        return columns[ordinal].Name;
     }
 
     public override int GetOrdinal(string name)
     {
-        var cols = columns!;
+        var cols = columns;
         for (var i = 0; i < fieldCount; i++)
         {
             if (cols[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
@@ -646,7 +648,7 @@ public sealed class PgDataReader : DbDataReader
             return DBNull.Value;
         }
 
-        var typeOid = columns![ordinal].TypeOid;
+        var typeOid = columns[ordinal].TypeOid;
         return typeOid switch
         {
             OidBool => GetBoolean(ordinal),
@@ -682,13 +684,13 @@ public sealed class PgDataReader : DbDataReader
 
     public override string GetDataTypeName(int ordinal)
     {
-        var typeOid = columns![ordinal].TypeOid;
+        var typeOid = columns[ordinal].TypeOid;
         return OidToTypeNameMap.GetValueOrDefault(typeOid, "unknown");
     }
 
     public override Type GetFieldType(int ordinal)
     {
-        var typeOid = columns![ordinal].TypeOid;
+        var typeOid = columns[ordinal].TypeOid;
         return OidToTypeMap.TryGetValue(typeOid, out var type) ? type : typeof(object);
     }
 
