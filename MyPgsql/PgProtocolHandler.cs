@@ -25,6 +25,12 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private int streamBufferPos;
     private int streamBufferLen;
 
+    internal byte[] StreamBuffer => streamBuffer;
+
+    internal ref int StreamBufferPos => ref streamBufferPos;
+
+    internal int StreamBufferLen => streamBufferLen;
+
     public void Dispose()
     {
         DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -95,10 +101,6 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         await HandleAuthenticationAsync(cancellationToken).ConfigureAwait(false);
         // ReSharper restore ParameterHidesMember
     }
-
-    internal byte[] StreamBuffer => streamBuffer;
-    internal ref int StreamBufferPos => ref streamBufferPos;
-    internal int StreamBufferLen => streamBufferLen;
 
     /// <summary>
     /// パラメーター名を抽出する正規表現
@@ -454,14 +456,14 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         IReadOnlyList<PgParameter> parameters,
         CancellationToken cancellationToken)
     {
-        await SendExtendedQueryWithParametersAsync(sql, parameters, cancellationToken);
-        return await WaitForCommandCompleteAsync(cancellationToken);
+        await SendExtendedQueryWithParametersAsync(sql, parameters, cancellationToken).ConfigureAwait(false);
+        return await WaitForCommandCompleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> ExecuteNonQueryAsync(string sql, CancellationToken cancellationToken)
     {
-        await SendExtendedQueryAsync(sql, cancellationToken);
-        return await WaitForCommandCompleteAsync(cancellationToken);
+        await SendExtendedQueryAsync(sql, cancellationToken).ConfigureAwait(false);
+        return await WaitForCommandCompleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<int> WaitForCommandCompleteAsync(CancellationToken cancellationToken)
@@ -506,7 +508,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     /// </summary>
     public async Task<int> ExecuteSimpleQueryAsync(string sql, CancellationToken cancellationToken)
     {
-        await SendSimpleQueryAsync(sql, cancellationToken);
+        await SendSimpleQueryAsync(sql, cancellationToken).ConfigureAwait(false);
 
         var affectedRows = 0;
 
@@ -565,7 +567,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         finally
         {
             if (!ReferenceEquals(buffer, writeBuffer))
+            {
                 ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
     }
 
@@ -574,7 +578,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     {
         var available = streamBufferLen - streamBufferPos;
         if (available >= count)
+        {
             return ValueTask.CompletedTask;
+        }
 
         return EnsureBufferedAsyncCore(count, available, cancellationToken);
     }
@@ -623,7 +629,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 cancellationToken).ConfigureAwait(false);
 
             if (read == 0)
+            {
                 throw new PgException("接続が閉じられました");
+            }
 
             streamBufferLen += read;
             freeSpace -= read;
@@ -635,7 +643,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         {
             var socketAvailable = socket!.Available;
             if (socketAvailable <= 0)
+            {
                 break;
+            }
 
             var toRead = Math.Min(socketAvailable, freeSpace);
             var extraRead = await socket.ReceiveAsync(
@@ -643,13 +653,16 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 cancellationToken).ConfigureAwait(false);
 
             if (extraRead == 0)
+            {
                 break;
+            }
 
             streamBufferLen += extraRead;
             freeSpace -= extraRead;
         }
     }
 
+    // ReSharper disable once ParameterHidesMember
     private async ValueTask SendStartupMessageAsync(string database, string user, CancellationToken cancellationToken)
     {
         var buffer = writeBuffer!;
@@ -680,7 +693,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             switch (messageType)
             {
                 case 'R':
-                    await HandleAuthResponseAsync(payload, payloadLength, cancellationToken).ConfigureAwait(false);
+                    await HandleAuthResponseAsync(payload, cancellationToken).ConfigureAwait(false);
                     ReturnBuffer(payload);
                     break;
 
@@ -705,7 +718,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
-    private async ValueTask HandleAuthResponseAsync(byte[] payload, int length, CancellationToken cancellationToken)
+    private ValueTask HandleAuthResponseAsync(byte[] payload, CancellationToken cancellationToken)
     {
         var authType = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan());
 
@@ -715,24 +728,23 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 break;
 
             case 3: // AuthenticationCleartextPassword
-                await SendPasswordMessageAsync(password, cancellationToken).ConfigureAwait(false);
-                break;
+                return SendPasswordMessageAsync(password, cancellationToken);
 
             case 5: // AuthenticationMD5Password
                 var salt = payload.AsSpan(4, 4).ToArray();
                 ComputeMd5Password(salt, out var md5Password);
-                await SendPasswordMessageAsync(md5Password, cancellationToken).ConfigureAwait(false);
-                break;
+                return SendPasswordMessageAsync(md5Password, cancellationToken);
 
             case 10: // AuthenticationSASL
-                await HandleSaslAuthAsync(cancellationToken).ConfigureAwait(false);
-                break;
+                return HandleSaslAuthAsync(cancellationToken);
 
             default:
                 throw new PgException($"未対応の認証方式: {authType}");
         }
+        return ValueTask.CompletedTask;
     }
 
+    // ReSharper disable once ParameterHidesMember
     private async ValueTask SendPasswordMessageAsync(string password, CancellationToken cancellationToken)
     {
         var passwordByteCount = Encoding.UTF8.GetByteCount(password) + 1;
@@ -754,6 +766,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
+#pragma warning disable CA5351
     private void ComputeMd5Password(ReadOnlySpan<byte> salt, out string result)
     {
         Span<byte> innerHash = stackalloc byte[16];
@@ -779,6 +792,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
         result = new string(passwordChars);
     }
+#pragma warning restore CA5351
 
     private async ValueTask HandleSaslAuthAsync(CancellationToken cancellationToken)
     {
@@ -802,7 +816,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var serverParams = ParseScramParams(serverFirstStr);
         var serverNonce = serverParams["r"];
         var salt = Convert.FromBase64String(serverParams["s"]);
-        var iterations = int.Parse(serverParams["i"]);
+        var iterations = Int32.Parse(serverParams["i"], CultureInfo.InvariantCulture);
 
         var clientFinalWithoutProof = $"c=biws,r={serverNonce}";
         var clientFinalMessage = ComputeScramClientFinal(clientFirstBare, serverFirstStr, clientFinalWithoutProof, salt, iterations);
@@ -811,7 +825,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var (msgType2, serverFinalPayload, _) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
         ReturnBuffer(serverFinalPayload);
         if (msgType2 == 'E')
+        {
             throw new PgException("SCRAM認証失敗");
+        }
     }
 
     private string ComputeScramClientFinal(string clientFirstBare, string serverFirstStr, string clientFinalWithoutProof, byte[] salt, int iterations)
@@ -831,8 +847,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         HMACSHA256.HashData(storedKey, Encoding.UTF8.GetBytes(authMessage), clientSignature);
 
         Span<byte> clientProof = stackalloc byte[32];
-        for (int i = 0; i < 32; i++)
+        for (var i = 0; i < 32; i++)
+        {
             clientProof[i] = (byte)(clientKey[i] ^ clientSignature[i]);
+        }
 
         return $"{clientFinalWithoutProof},p={Convert.ToBase64String(clientProof)}";
     }
@@ -885,7 +903,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
-    private async Task<(char type, byte[] payload, int length)> ReadMessageAsync(CancellationToken cancellationToken)
+    private async Task<(char Type, byte[] Payload, int Length)> ReadMessageAsync(CancellationToken cancellationToken)
     {
         await ReadExactAsync(readBuffer.AsMemory(0, 5), cancellationToken).ConfigureAwait(false);
 
@@ -893,7 +911,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var length = BinaryPrimitives.ReadInt32BigEndian(readBuffer.AsSpan(1)) - 4;
 
         if (length == 0)
+        {
             return (type, Array.Empty<byte>(), 0);
+        }
 
         var buffer = ArrayPool<byte>.Shared.Rent(length);
         await ReadExactAsync(buffer.AsMemory(0, length), cancellationToken).ConfigureAwait(false);
@@ -908,7 +928,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         {
             var read = await socket!.ReceiveAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
+            {
                 throw new PgException("接続が閉じられました");
+            }
             offset += read;
         }
     }
@@ -917,7 +939,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private static void ReturnBuffer(byte[] buffer)
     {
         if (buffer.Length > 0)
+        {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
