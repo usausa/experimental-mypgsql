@@ -3,78 +3,17 @@ namespace MyPgsql;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections;
-using System.Collections.Frozen;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 
+using static MyPgsql.PgTypes;
+
+#pragma warning disable CA1010
 public sealed class PgDataReader : DbDataReader
 {
-    // PostgreSQL OID constants
-    private const int OidBool = 16;
-    private const int OidBytea = 17;
-    private const int OidInt8 = 20;
-    private const int OidInt2 = 21;
-    private const int OidInt4 = 23;
-    private const int OidText = 25;
-    private const int OidOid = 26;
-    private const int OidFloat4 = 700;
-    private const int OidFloat8 = 701;
-    private const int OidVarchar = 1043;
-    private const int OidChar = 1042;
-    private const int OidDate = 1082;
-    private const int OidTimestamp = 1114;
-    private const int OidTimestampTz = 1184;
-    private const int OidNumeric = 1700;
-    private const int OidUuid = 2950;
-
-    // OID to Type mapping
-    private static readonly FrozenDictionary<int, Type> OidToTypeMap = new Dictionary<int, Type>
-    {
-        [OidBool] = typeof(bool),
-        [OidBytea] = typeof(byte[]),
-        [OidInt8] = typeof(long),
-        [OidInt2] = typeof(short),
-        [OidInt4] = typeof(int),
-        [OidText] = typeof(string),
-        [OidOid] = typeof(int),
-        [OidFloat4] = typeof(float),
-        [OidFloat8] = typeof(double),
-        [OidVarchar] = typeof(string),
-        [OidChar] = typeof(string),
-        [OidDate] = typeof(DateTime),
-        [OidTimestamp] = typeof(DateTime),
-        [OidTimestampTz] = typeof(DateTime),
-        [OidNumeric] = typeof(decimal),
-        [OidUuid] = typeof(Guid)
-    }.ToFrozenDictionary();
-
-    // OID to TypeName mapping
-    private static readonly FrozenDictionary<int, string> OidToTypeNameMap = new Dictionary<int, string>
-    {
-        [OidBool] = "boolean",
-        [OidBytea] = "bytea",
-        [OidInt8] = "bigint",
-        [OidInt2] = "smallint",
-        [OidInt4] = "integer",
-        [OidText] = "text",
-        [OidOid] = "oid",
-        [OidFloat4] = "real",
-        [OidFloat8] = "double precision",
-        [OidVarchar] = "character varying",
-        [OidChar] = "character",
-        [OidDate] = "date",
-        [OidTimestamp] = "timestamp without time zone",
-        [OidTimestampTz] = "timestamp with time zone",
-        [OidNumeric] = "numeric",
-        [OidUuid] = "uuid"
-    }.ToFrozenDictionary();
-
-    // PostgreSQL epoch (2000-01-01 00:00:00 UTC)
-    private static readonly DateTime PostgresEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-
     private readonly PgProtocolHandler protocol;
     private readonly PgConnection connection;
     private readonly CommandBehavior behavior;
@@ -133,14 +72,14 @@ public sealed class PgDataReader : DbDataReader
             return new ValueTask<bool>(false);
         }
 
-        // 同期パス: バッファに十分なデータがある場合
+        // Synchronous path: if enough data is already buffered
         var result = TryReadSync();
         if (result.HasValue)
         {
             return new ValueTask<bool>(result.Value);
         }
 
-        // 非同期パス
+        // Asynchronous path
         return ReadAsyncCoreInternal(cancellationToken);
     }
 
@@ -155,7 +94,7 @@ public sealed class PgDataReader : DbDataReader
         {
             var available = len - pos;
 
-            // ヘッダー（5バイト）が読めるか確認
+            // Check if we can read the header (5 bytes)
             if (available < 5)
             {
                 return null;
@@ -164,7 +103,7 @@ public sealed class PgDataReader : DbDataReader
             var messageType = (char)buffer[pos];
             var payloadLength = BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(pos + 1)) - 4;
 
-            // ペイロード全体が読めるか確認
+            // Check if we can read the entire payload
             var totalMessageSize = 5 + payloadLength;
             if (available < totalMessageSize)
             {
@@ -203,7 +142,7 @@ public sealed class PgDataReader : DbDataReader
                 case 'E': // Error
                     var error = ParseErrorMessage(buffer.AsSpan(payloadOffset, payloadLength));
                     pos += payloadLength;
-                    throw new PgException($"クエリエラー: {error}");
+                    throw new PgException($"Query error: {error}");
 
                 case '1': // ParseComplete (Extended Query Protocol)
                 case '2': // BindComplete (Extended Query Protocol)
@@ -223,7 +162,7 @@ public sealed class PgDataReader : DbDataReader
     {
         while (true)
         {
-            // ヘッダーを読み取り
+            // Read header
             await protocol.EnsureBufferedAsync(5, cancellationToken).ConfigureAwait(false);
 
             var buffer = protocol.StreamBuffer;
@@ -232,10 +171,10 @@ public sealed class PgDataReader : DbDataReader
             var messageType = (char)buffer[pos];
             var payloadLength = BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(pos + 1)) - 4;
 
-            // ヘッダー+ペイロードを一度に確保
+            // Ensure header + payload at once
             await protocol.EnsureBufferedAsync(5 + payloadLength, cancellationToken).ConfigureAwait(false);
 
-            // EnsureBufferedAsync後にバッファが変わる可能性があるため再取得
+            // Re-fetch buffer since EnsureBufferedAsync may change it
             buffer = protocol.StreamBuffer;
             pos = protocol.StreamBufferPos;
 
@@ -258,7 +197,7 @@ public sealed class PgDataReader : DbDataReader
                 case 'T': // RowDescription
                     ParseRowDescription(payload);
                     protocol.StreamBufferPos += payloadLength;
-                    // 同期パスで継続を試行
+                    // Try to continue with synchronous path
                     var syncResult = TryReadSync();
                     if (syncResult.HasValue)
                     {
@@ -268,7 +207,7 @@ public sealed class PgDataReader : DbDataReader
 
                 case 'C': // CommandComplete
                     protocol.StreamBufferPos += payloadLength;
-                    // 同期パスで継続を試行
+                    // Try to continue with synchronous path
                     syncResult = TryReadSync();
                     if (syncResult.HasValue)
                     {
@@ -284,13 +223,13 @@ public sealed class PgDataReader : DbDataReader
                 case 'E': // Error
                     var error = ParseErrorMessage(payload);
                     protocol.StreamBufferPos += payloadLength;
-                    throw new PgException($"クエリエラー: {error}");
+                    throw new PgException($"Query error: {error}");
 
                 case '1': // ParseComplete (Extended Query Protocol)
                 case '2': // BindComplete (Extended Query Protocol)
                 case 'n': // NoData (Extended Query Protocol)
                     protocol.StreamBufferPos += payloadLength;
-                    // 同期パスで継続を試行
+                    // Try to continue with synchronous path
                     syncResult = TryReadSync();
                     if (syncResult.HasValue)
                     {
@@ -300,7 +239,7 @@ public sealed class PgDataReader : DbDataReader
 
                 default:
                     protocol.StreamBufferPos += payloadLength;
-                    // 同期パスで継続を試行
+                    // Try to continue with synchronous path
                     syncResult = TryReadSync();
                     if (syncResult.HasValue)
                     {
@@ -326,7 +265,7 @@ public sealed class PgDataReader : DbDataReader
             var name = Encoding.UTF8.GetString(payload.Slice(offset, nameEnd));
             offset += nameEnd + 1;
 
-            // テーブルOID (4), 列番号 (2), 型OID (4), 型サイズ (2), 型修飾子 (4), フォーマット (2)
+            // Table OID (4), Column number (2), Type OID (4), Type size (2), Type modifier (4), Format (2)
             var typeOid = BinaryPrimitives.ReadInt32BigEndian(payload[(offset + 6)..]);
             var formatCode = BinaryPrimitives.ReadInt16BigEndian(payload[(offset + 16)..]);
             offset += 18;
@@ -380,13 +319,13 @@ public sealed class PgDataReader : DbDataReader
         }
         isClosed = true;
 
-        // 未完了の場合、ReadyForQueryまで読み飛ばす
+        // If not completed, drain messages until ReadyForQuery
         if (!completed)
         {
             await DrainToReadyForQueryAsync().ConfigureAwait(false);
         }
 
-        // プールからのバッファを返却
+        // Return buffers to pool
         // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
         if (columns is not null)
         {
@@ -414,7 +353,7 @@ public sealed class PgDataReader : DbDataReader
     }
 
     /// <summary>
-    /// ReadyForQuery ('Z') メッセージまで全てのメッセージを読み飛ばす
+    /// Drain all messages until ReadyForQuery ('Z') message.
     /// </summary>
     private async ValueTask DrainToReadyForQueryAsync()
     {
@@ -440,7 +379,7 @@ public sealed class PgDataReader : DbDataReader
 
             if (messageType == 'E')
             {
-                // エラーは無視して継続（すでにcloseしているため）
+                // Ignore errors and continue (already closing)
             }
         }
     }
@@ -451,13 +390,13 @@ public sealed class PgDataReader : DbDataReader
         var length = lengths[ordinal];
         if (length == -1)
         {
-            throw new InvalidCastException("値がNULLです");
+            throw new InvalidCastException("Value is NULL");
         }
         return rowBuffer.AsSpan(rowBaseOffset + offsets[ordinal], length);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsColumn(int ordinal) => columns[ordinal].FormatCode == 1;
+    private bool IsBinaryFormat(int ordinal) => columns[ordinal].FormatCode == FormatBinary;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override bool IsDBNull(int ordinal) => lengths[ordinal] == -1;
@@ -471,7 +410,7 @@ public sealed class PgDataReader : DbDataReader
     public override bool GetBoolean(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             return span[0] != 0;
         }
@@ -482,7 +421,7 @@ public sealed class PgDataReader : DbDataReader
     public override byte GetByte(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             return span[0];
         }
@@ -492,7 +431,20 @@ public sealed class PgDataReader : DbDataReader
 
     public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length)
     {
-        throw new NotSupportedException();
+        var span = GetValueSpan(ordinal);
+        if (buffer is null)
+        {
+            return span.Length;
+        }
+
+        var copyLength = Math.Min(length, span.Length - (int)dataOffset);
+        if (copyLength <= 0)
+        {
+            return 0;
+        }
+
+        span.Slice((int)dataOffset, copyLength).CopyTo(buffer.AsSpan(bufferOffset));
+        return copyLength;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -519,13 +471,13 @@ public sealed class PgDataReader : DbDataReader
     public override DateTime GetDateTime(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
-            // PostgreSQLバイナリ形式: 2000-01-01からのマイクロ秒数 (Int64)
+            // PostgreSQL binary format: microseconds since 2000-01-01 (Int64)
             var microseconds = BinaryPrimitives.ReadInt64BigEndian(span);
             return PostgresEpoch.AddTicks(microseconds * 10); // 1 microsecond = 10 ticks
         }
-        // テキスト形式
+        // Text format
         Span<char> chars = stackalloc char[span.Length];
         var charCount = Encoding.UTF8.GetChars(span, chars);
         return DateTime.Parse(chars[..charCount], CultureInfo.InvariantCulture);
@@ -544,7 +496,7 @@ public sealed class PgDataReader : DbDataReader
     public override double GetDouble(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             var bits = BinaryPrimitives.ReadInt64BigEndian(span);
             return BitConverter.Int64BitsToDouble(bits);
@@ -557,7 +509,7 @@ public sealed class PgDataReader : DbDataReader
     public override float GetFloat(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             var bits = BinaryPrimitives.ReadInt32BigEndian(span);
             return BitConverter.Int32BitsToSingle(bits);
@@ -570,7 +522,7 @@ public sealed class PgDataReader : DbDataReader
     public override Guid GetGuid(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             return new Guid(span);
         }
@@ -582,7 +534,7 @@ public sealed class PgDataReader : DbDataReader
     public override short GetInt16(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             return BinaryPrimitives.ReadInt16BigEndian(span);
         }
@@ -594,7 +546,7 @@ public sealed class PgDataReader : DbDataReader
     public override int GetInt32(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             return BinaryPrimitives.ReadInt32BigEndian(span);
         }
@@ -606,7 +558,7 @@ public sealed class PgDataReader : DbDataReader
     public override long GetInt64(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-        if (IsColumn(ordinal))
+        if (IsBinaryFormat(ordinal))
         {
             return BinaryPrimitives.ReadInt64BigEndian(span);
         }
@@ -630,7 +582,7 @@ public sealed class PgDataReader : DbDataReader
             }
         }
 #pragma warning disable CA2201
-        throw new IndexOutOfRangeException($"カラム '{name}' が見つかりません");
+        throw new IndexOutOfRangeException($"Column '{name}' not found");
 #pragma warning restore CA2201
     }
 
@@ -721,3 +673,4 @@ public sealed class PgDataReader : DbDataReader
         return "Unknown error";
     }
 }
+#pragma warning restore CA1010

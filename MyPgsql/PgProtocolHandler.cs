@@ -10,6 +10,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
+using static MyPgsql.PgTypes;
+
 internal sealed partial class PgProtocolHandler : IAsyncDisposable
 {
     private const int DefaultBufferSize = 8192;
@@ -144,77 +146,75 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 {
                     var buffer = new byte[2];
                     BinaryPrimitives.WriteInt16BigEndian(buffer, Convert.ToInt16(value, CultureInfo.InvariantCulture));
-                    return (buffer, 2, 21); // int2
+                    return (buffer, 2, OidInt2);
                 }
             case DbType.Int32:
                 {
                     var buffer = new byte[4];
                     BinaryPrimitives.WriteInt32BigEndian(buffer, Convert.ToInt32(value, CultureInfo.InvariantCulture));
-                    return (buffer, 4, 23); // int4
+                    return (buffer, 4, OidInt4);
                 }
             case DbType.Int64:
                 {
                     var buffer = new byte[8];
                     BinaryPrimitives.WriteInt64BigEndian(buffer, Convert.ToInt64(value, CultureInfo.InvariantCulture));
-                    return (buffer, 8, 20); // int8
+                    return (buffer, 8, OidInt8);
                 }
             case DbType.Single:
                 {
                     var buffer = new byte[4];
                     BinaryPrimitives.WriteInt32BigEndian(buffer, BitConverter.SingleToInt32Bits(Convert.ToSingle(value, CultureInfo.InvariantCulture)));
-                    return (buffer, 4, 700); // float4
+                    return (buffer, 4, OidFloat4);
                 }
             case DbType.Double:
                 {
                     var buffer = new byte[8];
                     BinaryPrimitives.WriteInt64BigEndian(buffer, BitConverter.DoubleToInt64Bits(Convert.ToDouble(value, CultureInfo.InvariantCulture)));
-                    return (buffer, 8, 701); // float8
+                    return (buffer, 8, OidFloat8);
                 }
             case DbType.Boolean:
                 {
                     var buffer = new byte[1];
                     buffer[0] = (bool)value ? (byte)1 : (byte)0;
-                    return (buffer, 1, 16); // bool
+                    return (buffer, 1, OidBool);
                 }
             case DbType.DateTime or DbType.DateTime2 or DbType.DateTimeOffset:
                 {
-                    // PostgreSQLのtimestamp形式: 2000-01-01からのマイクロ秒数
+                    // PostgreSQL timestamp format: microseconds since 2000-01-01
                     var dt = value is DateTimeOffset dto ? dto.UtcDateTime : Convert.ToDateTime(value, CultureInfo.InvariantCulture);
-                    var postgresEpoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-                    var microseconds = (dt.ToUniversalTime() - postgresEpoch).Ticks / 10;
+                    var microseconds = (dt.ToUniversalTime() - PostgresEpoch).Ticks / 10;
                     var buffer = new byte[8];
                     BinaryPrimitives.WriteInt64BigEndian(buffer, microseconds);
-                    return (buffer, 8, 1114); // timestamp
+                    return (buffer, 8, OidTimestamp);
                 }
             case DbType.Date:
                 {
-                    // PostgreSQLのdate形式: 2000-01-01からの日数
+                    // PostgreSQL date format: days since 2000-01-01
                     var dt = Convert.ToDateTime(value, CultureInfo.InvariantCulture);
-                    var postgresEpoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-                    var days = (int)(dt.Date - postgresEpoch).TotalDays;
+                    var days = (int)(dt.Date - PostgresEpoch).TotalDays;
                     var buffer = new byte[4];
                     BinaryPrimitives.WriteInt32BigEndian(buffer, days);
-                    return (buffer, 4, 1082); // date
+                    return (buffer, 4, OidDate);
                 }
             case DbType.Guid:
                 {
                     var guid = (Guid)value;
                     var buffer = guid.ToByteArray();
-                    // PostgreSQLのUUID形式に変換（バイトオーダーの調整）
-                    // .NET Guidはリトルエンディアンなのでビッグエンディアンに変換
+                    // Convert to PostgreSQL UUID format (byte order adjustment)
+                    // .NET Guid is little-endian, convert to big-endian
                     Array.Reverse(buffer, 0, 4);
                     Array.Reverse(buffer, 4, 2);
                     Array.Reverse(buffer, 6, 2);
-                    return (buffer, 16, 2950); // uuid
+                    return (buffer, 16, OidUuid);
                 }
             case DbType.Binary:
                 {
                     var bytes = (byte[])value;
-                    return (bytes, bytes.Length, 17); // bytea
+                    return (bytes, bytes.Length, OidBytea);
                 }
             default:
                 {
-                    // Text encode for other types
+                    // Text encoding for other types
                     var strValue = value.ToString() ?? string.Empty;
                     var bytes = Encoding.UTF8.GetBytes(strValue);
                     return (bytes, bytes.Length, 0); // text (OID 0 means server should infer)
@@ -224,11 +224,11 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
     public async ValueTask SendExtendedQueryWithParametersAsync(string sql, IEnumerable<PgParameter> parameters, CancellationToken cancellationToken)
     {
-        // SQL内のパラメーター名を位置パラメーターに変換
+        // Convert parameter names in SQL to positional parameters
         var (convertedSql, parameterOrder) = ConvertToPositionalParameters(sql);
         var sqlBytes = Encoding.UTF8.GetBytes(convertedSql);
 
-        // パラメーターをエンコード
+        // Encode parameters
         var parameterLookup = parameters.ToDictionary(p => p.ParameterName, StringComparer.OrdinalIgnoreCase);
         var encodedParams = new List<(byte[] Data, int Length, int Oid)>(parameterLookup.Count);
         foreach (var paramName in parameterOrder)
@@ -239,13 +239,13 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             }
             else
             {
-                throw new InvalidOperationException($"パラメーター '{paramName}' が見つかりません");
+                throw new InvalidOperationException($"Parameter '{paramName}' not found");
             }
         }
 
         var paramCount = encodedParams.Count;
 
-        // バッファサイズ計算
+        // Calculate buffer size
         // Parse: 1 + 4 + 1(name) + sqlLen + 1 + 2(param count) + 4 * paramCount (param OIDs)
         var parsePayloadLen = 1 + sqlBytes.Length + 1 + 2 + (4 * paramCount);
         var parseLen = 1 + 4 + parsePayloadLen;
@@ -286,7 +286,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             buffer[offset++] = 0; // null terminator
             BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), (short)paramCount);
             offset += 2;
-            // パラメーターOIDを書き込み
+            // Write parameter OIDs
             foreach (var (_, _, oid) in encodedParams)
             {
                 BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), oid);
@@ -300,17 +300,17 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             buffer[offset++] = 0; // unnamed portal
             buffer[offset++] = 0; // unnamed statement
 
-            // パラメーターフォーマットコード
+            // Parameter format codes
             BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), (short)paramCount);
             offset += 2;
-            foreach (var (_, _, oid) in encodedParams)
+            for (var i = 0; i < encodedParams.Count; i++)
             {
-                // バイナリフォーマット (1) を指定
-                BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), 1);
+                // Binary format (1)
+                BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), FormatBinary);
                 offset += 2;
             }
 
-            // パラメーター値
+            // Parameter values
             BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), (short)paramCount);
             offset += 2;
             foreach (var (data, length, _) in encodedParams)
@@ -324,10 +324,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 }
             }
 
-            // 結果フォーマット
+            // Result format
             BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), 1); // one result format code
             offset += 2;
-            BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), 1); //  format for all columns
+            BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), FormatBinary); // binary format for all columns
             offset += 2;
 
             // Describe message ('D')
@@ -362,7 +362,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     {
         var sqlBytes = Encoding.UTF8.GetBytes(sql);
 
-        // 必要なバッファサイズを計算
+        // Calculate required buffer size
         // Parse: 1 + 4 + 1(name) + sqlLen + 1 + 2(param count)
         // Bind: 1 + 4 + 1(portal) + 1(stmt) + 2(format count) + 2(param count) + 2(result format count) + 2(result format=1)
         // Describe: 1 + 4 + 1(type) + 1(name)
@@ -403,7 +403,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             offset += 2;
             BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), 1); // one result format code
             offset += 2;
-            BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), 1); //  format for all columns
+            BinaryPrimitives.WriteInt16BigEndian(buffer.AsSpan(offset), FormatBinary); // binary format for all columns
             offset += 2;
 
             // Describe message ('D')
@@ -446,7 +446,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         return await WaitForCommandCompleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<int> WaitForCommandCompleteAsync(CancellationToken cancellationToken)
+    private async ValueTask<int> WaitForCommandCompleteAsync(CancellationToken cancellationToken)
     {
         var affectedRows = 0;
 
@@ -474,7 +474,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 case 'E':
                     var error = ParseErrorMessage(payload);
                     streamBufferPos += length;
-                    throw new PgException($"クエリエラー: {error}");
+                    throw new PgException($"Query error: {error}");
 
                 default:
                     streamBufferPos += length;
@@ -513,7 +513,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 case 'E':
                     var error = ParseErrorMessage(payload);
                     streamBufferPos += length;
-                    throw new PgException($"クエリエラー: {error}");
+                    throw new PgException($"Query error: {error}");
 
                 default:
                     streamBufferPos += length;
@@ -567,10 +567,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var needed = count - available;
         var freeSpace = streamBuffer.Length - streamBufferLen;
 
-        // 空き容量が足りない場合のみシフトまたは拡張
+        // Only shift or expand if insufficient free space
         if (freeSpace < needed)
         {
-            // バッファ全体で足りるならシフト
+            // If buffer has enough space, just shift
             if (streamBuffer.Length >= count)
             {
                 if (available > 0)
@@ -583,7 +583,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             }
             else
             {
-                // バッファ拡張が必要
+                // Buffer expansion required
                 var newSize = Math.Max(streamBuffer.Length * 2, count);
                 var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
                 if (available > 0)
@@ -598,7 +598,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             }
         }
 
-        // 必要な量を読み取る（可能な限り多く読み取る）
+        // Read required amount (read as much as possible)
         do
         {
             var read = await socket!.ReceiveAsync(
@@ -607,7 +607,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
             if (read == 0)
             {
-                throw new PgException("接続が閉じられました");
+                throw new PgException("Connection closed");
             }
 
             streamBufferLen += read;
@@ -615,7 +615,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
         while (streamBufferLen - streamBufferPos < count);
 
-        // 追加で利用可能なデータがあれば貪欲に読み取る（ノンブロッキング）
+        // Greedily read any additional available data (non-blocking)
         while (freeSpace > 0)
         {
             var socketAvailable = socket!.Available;
@@ -686,7 +686,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 case 'E':
                     var error = ParseErrorMessage(payload.AsSpan(0, payloadLength));
                     ReturnBuffer(payload);
-                    throw new PgException($"認証エラー: {error}");
+                    throw new PgException($"Authentication error: {error}");
 
                 default:
                     ReturnBuffer(payload);
@@ -716,7 +716,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 return HandleSaslAuthAsync(cancellationToken);
 
             default:
-                throw new PgException($"未対応の認証方式: {authType}");
+                throw new PgException($"Unsupported authentication method: {authType}");
         }
         return ValueTask.CompletedTask;
     }
@@ -784,7 +784,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         {
             var error = ParseErrorMessage(serverFirstPayload.AsSpan(0, serverFirstLength));
             ReturnBuffer(serverFirstPayload);
-            throw new PgException($"SASL認証エラー: {error}");
+            throw new PgException($"SASL authentication error: {error}");
         }
 
         var serverFirstStr = Encoding.UTF8.GetString(serverFirstPayload.AsSpan(0, serverFirstLength));
@@ -803,7 +803,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         ReturnBuffer(serverFinalPayload);
         if (msgType2 == 'E')
         {
-            throw new PgException("SCRAM認証失敗");
+            throw new PgException("SCRAM authentication failed");
         }
     }
 
@@ -906,7 +906,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             var read = await socket!.ReceiveAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
-                throw new PgException("接続が閉じられました");
+                throw new PgException("Connection closed");
             }
             offset += read;
         }
