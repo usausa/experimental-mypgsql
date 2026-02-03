@@ -3,14 +3,45 @@ namespace MyPgsql;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 
 public sealed class PgConnection : DbConnection
 {
-    private PgConnectionStringBuilder _connectionStringBuilder = new();
-    private string _connectionString = "";
-    private ConnectionState _state = ConnectionState.Closed;
-    private PgProtocolHandler? _protocol;
-    private PgTransaction? _currentTransaction;
+    private PgConnectionStringBuilder connectionStringBuilder = new();
+
+    // ReSharper disable once ReplaceWithFieldKeyword
+    private string connectionString = string.Empty;
+
+    private ConnectionState state = ConnectionState.Closed;
+
+    private PgProtocolHandler? protocol;
+
+#pragma warning disable CA2213
+    private PgTransaction? currentTransaction;
+#pragma warning restore CA2213
+
+    [AllowNull]
+    public override string ConnectionString
+    {
+        get => connectionString;
+        set
+        {
+            connectionString = value ?? string.Empty;
+            connectionStringBuilder = new PgConnectionStringBuilder(connectionString);
+        }
+    }
+
+    public override string Database => connectionStringBuilder.Database;
+
+    public override string DataSource => $"{connectionStringBuilder.Host}:{connectionStringBuilder.Port}";
+
+    public override string ServerVersion => "PostgreSQL";
+
+    public override ConnectionState State => state;
+
+    internal PgProtocolHandler Protocol => protocol ?? throw new InvalidOperationException("Connection is not open.");
+
+    internal PgTransaction? CurrentTransaction => currentTransaction;
 
     public PgConnection()
     {
@@ -21,24 +52,20 @@ public sealed class PgConnection : DbConnection
         ConnectionString = connectionString;
     }
 
-    [AllowNull]
-    public override string ConnectionString
+    protected override void Dispose(bool disposing)
     {
-        get => _connectionString;
-        set
+        if (disposing)
         {
-            _connectionString = value ?? string.Empty;
-            _connectionStringBuilder = new PgConnectionStringBuilder(_connectionString);
+            Close();
         }
+        base.Dispose(disposing);
     }
 
-    public override string Database => _connectionStringBuilder.Database;
-    public override string DataSource => $"{_connectionStringBuilder.Host}:{_connectionStringBuilder.Port}";
-    public override string ServerVersion => "PostgreSQL";
-    public override ConnectionState State => _state;
-
-    internal PgProtocolHandler Protocol => _protocol ?? throw new InvalidOperationException("接続が開かれていません");
-    internal PgTransaction? CurrentTransaction => _currentTransaction;
+    public override async ValueTask DisposeAsync()
+    {
+        await CloseAsync().ConfigureAwait(false);
+        await base.DisposeAsync().ConfigureAwait(false);
+    }
 
     public override void Open()
     {
@@ -47,33 +74,33 @@ public sealed class PgConnection : DbConnection
 
     public override async Task OpenAsync(CancellationToken cancellationToken)
     {
-        if (_state == ConnectionState.Open)
+        if (state == ConnectionState.Open)
         {
             return;
         }
 
-        _state = ConnectionState.Connecting;
+        state = ConnectionState.Connecting;
         try
         {
-            _protocol = new PgProtocolHandler();
-            await _protocol.ConnectAsync(
-                _connectionStringBuilder.Host,
-                _connectionStringBuilder.Port,
-                _connectionStringBuilder.Database,
-                _connectionStringBuilder.Username,
-                _connectionStringBuilder.Password,
+            protocol = new PgProtocolHandler();
+            await protocol.ConnectAsync(
+                connectionStringBuilder.Host,
+                connectionStringBuilder.Port,
+                connectionStringBuilder.Database,
+                connectionStringBuilder.Username,
+                connectionStringBuilder.Password,
                 cancellationToken).ConfigureAwait(false);
 
-            _state = ConnectionState.Open;
+            state = ConnectionState.Open;
         }
         catch
         {
-            _state = ConnectionState.Closed;
+            state = ConnectionState.Closed;
 #pragma warning disable CA1849
             // ReSharper disable once MethodHasAsyncOverload
-            _protocol?.Dispose();
+            protocol?.Dispose();
 #pragma warning restore CA1849
-            _protocol = null;
+            protocol = null;
             throw;
         }
     }
@@ -85,19 +112,19 @@ public sealed class PgConnection : DbConnection
 
     public override async Task CloseAsync()
     {
-        if (_state == ConnectionState.Closed)
+        if (state == ConnectionState.Closed)
         {
             return;
         }
 
-        if (_protocol is not null)
+        if (protocol is not null)
         {
-            await _protocol.DisposeAsync().ConfigureAwait(false);
-            _protocol = null;
+            await protocol.DisposeAsync().ConfigureAwait(false);
+            protocol = null;
         }
 
-        _currentTransaction = null;
-        _state = ConnectionState.Closed;
+        currentTransaction = null;
+        state = ConnectionState.Closed;
     }
 
     protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
@@ -105,18 +132,22 @@ public sealed class PgConnection : DbConnection
         return BeginTransactionAsync(isolationLevel, CancellationToken.None).GetAwaiter().GetResult();
     }
 
-    public new async Task<PgTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
+    public new Task<PgTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
     {
-        return await BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        return BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
     }
 
-    public async Task<PgTransaction> BeginTransactionAsync(IsolationLevel isolationLevel, CancellationToken cancellationToken = default)
+    public new async Task<PgTransaction> BeginTransactionAsync(IsolationLevel isolationLevel, CancellationToken cancellationToken = default)
     {
-        if (_state != ConnectionState.Open)
-            throw new InvalidOperationException("接続が開かれていません");
+        if (state != ConnectionState.Open)
+        {
+            throw new InvalidOperationException("Connection is not open.");
+        }
 
-        if (_currentTransaction is not null)
-            throw new InvalidOperationException("既にトランザクションが開始されています");
+        if (currentTransaction is not null)
+        {
+            throw new InvalidOperationException("Transaction is already started.");
+        }
 
         var isolationLevelSql = isolationLevel switch
         {
@@ -127,14 +158,14 @@ public sealed class PgConnection : DbConnection
             _ => "READ COMMITTED"
         };
 
-        await Protocol.ExecuteSimpleQueryAsync($"BEGIN ISOLATION LEVEL {isolationLevelSql}", cancellationToken);
-        _currentTransaction = new PgTransaction(this, isolationLevel);
-        return _currentTransaction;
+        await Protocol.ExecuteSimpleQueryAsync($"BEGIN ISOLATION LEVEL {isolationLevelSql}", cancellationToken).ConfigureAwait(false);
+        currentTransaction = new PgTransaction(this, isolationLevel);
+        return currentTransaction;
     }
 
     internal void ClearTransaction()
     {
-        _currentTransaction = null;
+        currentTransaction = null;
     }
 
     public new PgCommand CreateCommand()
@@ -149,21 +180,6 @@ public sealed class PgConnection : DbConnection
 
     public override void ChangeDatabase(string databaseName)
     {
-        throw new NotSupportedException("データベースの変更はサポートされていません");
-    }
-
-    public override async ValueTask DisposeAsync()
-    {
-        await CloseAsync().ConfigureAwait(false);
-        await base.DisposeAsync().ConfigureAwait(false);
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            Close();
-        }
-        base.Dispose(disposing);
+        throw new NotSupportedException("ChangeDatabase is not supported.");
     }
 }
