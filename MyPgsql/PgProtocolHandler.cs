@@ -19,8 +19,8 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private string user = string.Empty;
     private string password = string.Empty;
 
-    private byte[]? writeBuffer;
-    private byte[]? readBuffer;
+    private byte[] writeBuffer = null!;
+    private byte[] readBuffer = null!;
     private byte[] streamBuffer = null!;
     private int streamBufferPos;
     private int streamBufferLen;
@@ -59,16 +59,17 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             socket = null;
         }
 
+        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
         if (readBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(readBuffer);
-            readBuffer = null;
+            readBuffer = null!;
         }
 
         if (writeBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(writeBuffer);
-            writeBuffer = null;
+            writeBuffer = null!;
         }
 
         if (streamBuffer is not null)
@@ -76,6 +77,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             ArrayPool<byte>.Shared.Return(streamBuffer);
             streamBuffer = null!;
         }
+        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
     }
 
     // ReSharper disable ParameterHidesMember
@@ -99,20 +101,15 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
         await SendStartupMessageAsync(database, user, cancellationToken).ConfigureAwait(false);
         await HandleAuthenticationAsync(cancellationToken).ConfigureAwait(false);
-        // ReSharper restore ParameterHidesMember
     }
+    // ReSharper restore ParameterHidesMember
 
-    /// <summary>
-    /// パラメーター名を抽出する正規表現
-    /// </summary>
     [GeneratedRegex(@"@\w+", RegexOptions.Compiled)]
     private static partial Regex ParameterNameRegex();
 
-    /// <summary>
-    /// SQL内のパラメーター名をPostgreSQL位置パラメーター ($1, $2, ...) に変換
-    /// </summary>
     private static (string ConvertedSql, List<string> ParameterOrder) ConvertToPositionalParameters(string sql)
     {
+        // Convert parameter names to positional parameters ($1, $2, ...)
         var parameterOrder = new List<string>();
         var paramNameToIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
@@ -131,15 +128,14 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         return (convertedSql, parameterOrder);
     }
 
-    /// <summary>
-    /// パラメーターをバイナリ形式でエンコード
-    /// </summary>
     private static (byte[] Data, int Length, int Oid) EncodeParameter(PgParameter parameter)
     {
+        // Binary encode
+
         var value = parameter.Value;
         if (value is null || value == DBNull.Value)
         {
-            return (Array.Empty<byte>(), -1, 0); // NULL
+            return ([], -1, 0); // NULL
         }
 
         switch (parameter.DbType)
@@ -218,22 +214,15 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 }
             default:
                 {
-                    // テキスト形式としてエンコード
-                    var strValue = value?.ToString() ?? "";
+                    // Text encode for other types
+                    var strValue = value.ToString() ?? string.Empty;
                     var bytes = Encoding.UTF8.GetBytes(strValue);
                     return (bytes, bytes.Length, 0); // text (OID 0 means server should infer)
                 }
         }
     }
 
-    /// <summary>
-    /// Extended Query Protocol でパラメーター付きクエリを送信（バイナリフォーマット）
-    /// パラメーターはサーバー側で展開
-    /// </summary>
-    public async ValueTask SendExtendedQueryWithParametersAsync(
-        string sql,
-        IReadOnlyList<PgParameter> parameters,
-        CancellationToken cancellationToken)
+    public async ValueTask SendExtendedQueryWithParametersAsync(string sql, IEnumerable<PgParameter> parameters, CancellationToken cancellationToken)
     {
         // SQL内のパラメーター名を位置パラメーターに変換
         var (convertedSql, parameterOrder) = ConvertToPositionalParameters(sql);
@@ -241,7 +230,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
         // パラメーターをエンコード
         var parameterLookup = parameters.ToDictionary(p => p.ParameterName, StringComparer.OrdinalIgnoreCase);
-        var encodedParams = new List<(byte[] Data, int Length, int Oid)>();
+        var encodedParams = new List<(byte[] Data, int Length, int Oid)>(parameterLookup.Count);
         foreach (var paramName in parameterOrder)
         {
             if (parameterLookup.TryGetValue(paramName, out var param))
@@ -264,7 +253,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         // Bind: 1 + 4 + 1(portal) + 1(stmt) + 2(format count) + 2 * paramCount (format codes)
         //       + 2(param count) + sum(4 + param data length) + 2(result format count) + 2(result format)
         var bindPayloadLen = 1 + 1 + 2 + (2 * paramCount) + 2;
-        foreach (var (data, length, _) in encodedParams)
+        foreach (var (_, length, _) in encodedParams)
         {
             bindPayloadLen += 4 + (length > 0 ? length : 0);
         }
@@ -369,9 +358,6 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Extended Query Protocol でクエリを送信（パラメーターなし、バイナリフォーマット）
-    /// </summary>
     public async ValueTask SendExtendedQueryAsync(string sql, CancellationToken cancellationToken)
     {
         var sqlBytes = Encoding.UTF8.GetBytes(sql);
@@ -448,13 +434,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// パラメーター付きでNonQueryを実行
-    /// </summary>
-    public async Task<int> ExecuteNonQueryWithParametersAsync(
-        string sql,
-        IReadOnlyList<PgParameter> parameters,
-        CancellationToken cancellationToken)
+    public async Task<int> ExecuteNonQueryWithParametersAsync(string sql, IEnumerable<PgParameter> parameters, CancellationToken cancellationToken)
     {
         await SendExtendedQueryWithParametersAsync(sql, parameters, cancellationToken).ConfigureAwait(false);
         return await WaitForCommandCompleteAsync(cancellationToken).ConfigureAwait(false);
@@ -503,9 +483,6 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Simple Query Protocol でクエリを実行（トランザクション制御用）
-    /// </summary>
     public async Task<int> ExecuteSimpleQueryAsync(string sql, CancellationToken cancellationToken)
     {
         await SendSimpleQueryAsync(sql, cancellationToken).ConfigureAwait(false);
@@ -551,7 +528,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var queryByteCount = sqlByteCount + 1; // +1 for null terminator
         var totalLength = 1 + 4 + queryByteCount;
 
-        var buffer = totalLength <= writeBuffer!.Length
+        var buffer = totalLength <= writeBuffer.Length
             ? writeBuffer
             : ArrayPool<byte>.Shared.Rent(totalLength);
 
@@ -665,7 +642,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     // ReSharper disable once ParameterHidesMember
     private async ValueTask SendStartupMessageAsync(string database, string user, CancellationToken cancellationToken)
     {
-        var buffer = writeBuffer!;
+        var buffer = writeBuffer;
         var offset = 4;
 
         BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), 196608);
@@ -907,7 +884,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     {
         await ReadExactAsync(readBuffer.AsMemory(0, 5), cancellationToken).ConfigureAwait(false);
 
-        var type = (char)readBuffer![0];
+        var type = (char)readBuffer[0];
         var length = BinaryPrimitives.ReadInt32BigEndian(readBuffer.AsSpan(1)) - 4;
 
         if (length == 0)
@@ -996,7 +973,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var result = new Dictionary<string, string>(3);
         foreach (var part in message.Split(','))
         {
-            var idx = part.IndexOf('=');
+            var idx = part.IndexOf('=', StringComparison.Ordinal);
             if (idx > 0)
             {
                 result[part[..idx]] = part[(idx + 1)..];
