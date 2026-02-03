@@ -12,7 +12,9 @@ public sealed class PgConnection : DbConnection
     private PgProtocolHandler? _protocol;
     private PgTransaction? _currentTransaction;
 
-    public PgConnection() { }
+    public PgConnection()
+    {
+    }
 
     public PgConnection(string connectionString)
     {
@@ -25,7 +27,7 @@ public sealed class PgConnection : DbConnection
         get => _connectionString;
         set
         {
-            _connectionString = value ?? "";
+            _connectionString = value ?? string.Empty;
             _connectionStringBuilder = new PgConnectionStringBuilder(_connectionString);
         }
     }
@@ -46,7 +48,9 @@ public sealed class PgConnection : DbConnection
     public override async Task OpenAsync(CancellationToken cancellationToken)
     {
         if (_state == ConnectionState.Open)
+        {
             return;
+        }
 
         _state = ConnectionState.Connecting;
         try
@@ -58,14 +62,17 @@ public sealed class PgConnection : DbConnection
                 _connectionStringBuilder.Database,
                 _connectionStringBuilder.Username,
                 _connectionStringBuilder.Password,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
             _state = ConnectionState.Open;
         }
         catch
         {
             _state = ConnectionState.Closed;
+#pragma warning disable CA1849
+            // ReSharper disable once MethodHasAsyncOverload
             _protocol?.Dispose();
+#pragma warning restore CA1849
             _protocol = null;
             throw;
         }
@@ -79,11 +86,13 @@ public sealed class PgConnection : DbConnection
     public override async Task CloseAsync()
     {
         if (_state == ConnectionState.Closed)
-            return;
-
-        if (_protocol != null)
         {
-            await _protocol.DisposeAsync();
+            return;
+        }
+
+        if (_protocol is not null)
+        {
+            await _protocol.DisposeAsync().ConfigureAwait(false);
             _protocol = null;
         }
 
@@ -106,7 +115,7 @@ public sealed class PgConnection : DbConnection
         if (_state != ConnectionState.Open)
             throw new InvalidOperationException("接続が開かれていません");
 
-        if (_currentTransaction != null)
+        if (_currentTransaction is not null)
             throw new InvalidOperationException("既にトランザクションが開始されています");
 
         var isolationLevelSql = isolationLevel switch
@@ -145,8 +154,8 @@ public sealed class PgConnection : DbConnection
 
     public override async ValueTask DisposeAsync()
     {
-        await CloseAsync();
-        GC.SuppressFinalize(this);
+        await CloseAsync().ConfigureAwait(false);
+        await base.DisposeAsync().ConfigureAwait(false);
     }
 
     protected override void Dispose(bool disposing)

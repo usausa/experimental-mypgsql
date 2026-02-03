@@ -85,7 +85,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private static (byte[] data, int length, int oid) EncodeParameter(PgParameter parameter)
     {
         var value = parameter.Value;
-        if (value == null || value == DBNull.Value)
+        if (value is null || value == DBNull.Value)
         {
             return (Array.Empty<byte>(), -1, 0); // NULL
         }
@@ -932,7 +932,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_socket != null && _socket.Connected)
+        if (_socket is not null && _socket.Connected)
         {
             var terminate = new byte[5];
             terminate[0] = (byte)'X';
@@ -951,19 +951,19 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             _socket = null;
         }
 
-        if (_readBuffer != null)
+        if (_readBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(_readBuffer);
             _readBuffer = null;
         }
 
-        if (_writeBuffer != null)
+        if (_writeBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(_writeBuffer);
             _writeBuffer = null;
         }
 
-        if (_streamBuffer != null)
+        if (_streamBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(_streamBuffer);
             _streamBuffer = null!;

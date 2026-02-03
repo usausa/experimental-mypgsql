@@ -4,77 +4,54 @@ using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 
+#pragma warning disable CA2100
 public sealed class PgCommand : DbCommand
 {
-    private PgConnection? _connection;
-    private PgTransaction? _transaction;
-    private string _commandText = "";
-    private readonly PgParameterCollection _parameters = new();
-    private CommandType _commandType = CommandType.Text;
-    private int _commandTimeout = 30;
-
-    public PgCommand() { }
-
-    public PgCommand(string commandText)
-    {
-        _commandText = commandText;
-    }
-
-    public PgCommand(string commandText, PgConnection connection)
-    {
-        _commandText = commandText;
-        _connection = connection;
-    }
-
     [AllowNull]
-    public override string CommandText
-    {
-        get => _commandText;
-        set => _commandText = value ?? "";
-    }
+    public override string CommandText { get; set; } = string.Empty;
 
-    public override int CommandTimeout
-    {
-        get => _commandTimeout;
-        set => _commandTimeout = value;
-    }
+    public override int CommandTimeout { get; set; } = 30;
 
-    public override CommandType CommandType
-    {
-        get => _commandType;
-        set => _commandType = value;
-    }
+    public override CommandType CommandType { get; set; } = CommandType.Text;
 
     public override bool DesignTimeVisible { get; set; }
 
     public override UpdateRowSource UpdatedRowSource { get; set; }
 
-    public new PgConnection? Connection
-    {
-        get => _connection;
-        set => _connection = value;
-    }
+    public new PgConnection? Connection { get; set; }
 
     protected override DbConnection? DbConnection
     {
-        get => _connection;
-        set => _connection = value as PgConnection;
+        get => Connection;
+        set => Connection = value as PgConnection;
     }
 
-    public new PgTransaction? Transaction
-    {
-        get => _transaction;
-        set => _transaction = value;
-    }
+    public new PgTransaction? Transaction { get; set; }
 
     protected override DbTransaction? DbTransaction
     {
-        get => _transaction;
-        set => _transaction = value as PgTransaction;
+        get => Transaction;
+        set => Transaction = value as PgTransaction;
     }
 
-    public new PgParameterCollection Parameters => _parameters;
-    protected override DbParameterCollection DbParameterCollection => _parameters;
+    public new PgParameterCollection Parameters { get; } = new();
+
+    protected override DbParameterCollection DbParameterCollection => Parameters;
+
+    public PgCommand()
+    {
+    }
+
+    public PgCommand(string commandText)
+    {
+        CommandText = commandText;
+    }
+
+    public PgCommand(string commandText, PgConnection connection)
+    {
+        CommandText = commandText;
+        Connection = connection;
+    }
 
     public override void Cancel()
     {
@@ -85,22 +62,15 @@ public sealed class PgCommand : DbCommand
         return ExecuteNonQueryAsync(CancellationToken.None).GetAwaiter().GetResult();
     }
 
-    public override async Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
+    public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
     {
         ValidateCommand();
 
-        if (_parameters.Count == 0)
+        if (Parameters.Count == 0)
         {
-            return await _connection!.Protocol.ExecuteNonQueryAsync(_commandText, cancellationToken);
+            return Connection!.Protocol.ExecuteNonQueryAsync(CommandText, cancellationToken);
         }
-        else
-        {
-            // パラメーターをProtocolHandlerに渡してサーバー側で展開
-            return await _connection!.Protocol.ExecuteNonQueryWithParametersAsync(
-                _commandText,
-                _parameters.GetParametersInternal(),
-                cancellationToken);
-        }
+        return Connection!.Protocol.ExecuteNonQueryWithParametersAsync(CommandText, Parameters.GetParametersInternal(), cancellationToken);
     }
 
     public override object? ExecuteScalar()
@@ -110,10 +80,14 @@ public sealed class PgCommand : DbCommand
 
     public override async Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
     {
-        await using var reader = await ExecuteDbDataReaderAsync(CommandBehavior.Default, cancellationToken);
-        if (await reader.ReadAsync(cancellationToken))
+#pragma warning disable CA2007
+        await using var reader = await ExecuteDbDataReaderAsync(CommandBehavior.Default, cancellationToken).ConfigureAwait(false);
+#pragma warning restore CA2007
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+#pragma warning disable CA1849
             return reader.IsDBNull(0) ? null : reader.GetValue(0);
+#pragma warning restore CA1849
         }
         return null;
     }
@@ -127,20 +101,16 @@ public sealed class PgCommand : DbCommand
     {
         ValidateCommand();
 
-        if (_parameters.Count == 0)
+        if (Parameters.Count == 0)
         {
-            await _connection!.Protocol.SendExtendedQueryAsync(_commandText, cancellationToken);
+            await Connection!.Protocol.SendExtendedQueryAsync(CommandText, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            // パラメーターをProtocolHandlerに渡してサーバー側で展開
-            await _connection!.Protocol.SendExtendedQueryWithParametersAsync(
-                _commandText,
-                _parameters.GetParametersInternal(),
-                cancellationToken);
+            await Connection!.Protocol.SendExtendedQueryWithParametersAsync(CommandText, Parameters.GetParametersInternal(), cancellationToken).ConfigureAwait(false);
         }
 
-        return new PgDataReader(_connection!.Protocol, _connection, behavior, cancellationToken);
+        return new PgDataReader(Connection!.Protocol, Connection, behavior, cancellationToken);
     }
 
     public override void Prepare()
@@ -154,19 +124,18 @@ public sealed class PgCommand : DbCommand
 
     private void ValidateCommand()
     {
-        if (_connection == null)
-            throw new InvalidOperationException("Connectionが設定されていません");
-
-        if (_connection.State != ConnectionState.Open)
-            throw new InvalidOperationException("接続が開かれていません");
-
-        if (string.IsNullOrEmpty(_commandText))
-            throw new InvalidOperationException("CommandTextが設定されていません");
-    }
-
-    public override async ValueTask DisposeAsync()
-    {
-        GC.SuppressFinalize(this);
-        await Task.CompletedTask;
+        if (Connection is null)
+        {
+            throw new InvalidOperationException("Connection is not set");
+        }
+        if (Connection.State != ConnectionState.Open)
+        {
+            throw new InvalidOperationException("Connection is not open");
+        }
+        if (String.IsNullOrEmpty(CommandText))
+        {
+            throw new InvalidOperationException("CommandText is not set");
+        }
     }
 }
+#pragma warning restore CA2100

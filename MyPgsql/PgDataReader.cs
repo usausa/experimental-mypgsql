@@ -364,17 +364,17 @@ public sealed class PgDataReader : DbDataReader
         }
 
         // プールからのバッファを返却
-        if (_columns != null)
+        if (_columns is not null)
         {
             ArrayPool<PgColumnInfo>.Shared.Return(_columns);
             _columns = null;
         }
-        if (_offsets != null)
+        if (_offsets is not null)
         {
             ArrayPool<int>.Shared.Return(_offsets);
             _offsets = null;
         }
-        if (_lengths != null)
+        if (_lengths is not null)
         {
             ArrayPool<int>.Shared.Return(_lengths);
             _lengths = null;
@@ -478,7 +478,7 @@ public sealed class PgDataReader : DbDataReader
     public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length)
     {
         var str = GetString(ordinal);
-        if (buffer == null)
+        if (buffer is null)
             return str.Length;
 
         var copyLength = Math.Min(length, str.Length - (int)dataOffset);
