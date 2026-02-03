@@ -47,7 +47,7 @@ public sealed class PgDataReader : DbDataReader
         [OidTimestamp] = typeof(DateTime),
         [OidTimestampTz] = typeof(DateTime),
         [OidNumeric] = typeof(decimal),
-        [OidUuid] = typeof(Guid),
+        [OidUuid] = typeof(Guid)
     }.ToFrozenDictionary();
 
     // OID to TypeName mapping
@@ -68,16 +68,17 @@ public sealed class PgDataReader : DbDataReader
         [OidTimestamp] = "timestamp without time zone",
         [OidTimestampTz] = "timestamp with time zone",
         [OidNumeric] = "numeric",
-        [OidUuid] = "uuid",
+        [OidUuid] = "uuid"
     }.ToFrozenDictionary();
 
     // PostgreSQL epoch (2000-01-01 00:00:00 UTC)
     private static readonly DateTime PostgresEpoch = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
-    private readonly PgProtocolHandler _protocol;
-    private readonly PgConnection _connection;
-    private readonly CommandBehavior _behavior;
-    private readonly CancellationToken _cancellationToken;
+    private readonly PgProtocolHandler protocol;
+    private readonly PgConnection connection;
+    private readonly CommandBehavior behavior;
+    private readonly CancellationToken cancellationToken;
+    
     private PgColumnInfo[]? _columns;
     private int _columnCount;
     private bool _hasRows;
@@ -85,28 +86,33 @@ public sealed class PgDataReader : DbDataReader
     private bool _isClosed;
     private bool _completed;
 
-    // 行データへの直接参照
+    // Row data buffer
     private byte[]? _rowBuffer;
     private int _rowBaseOffset;
     private int[]? _offsets;
     private int[]? _lengths;
 
-    internal PgDataReader(PgProtocolHandler protocol, PgConnection connection, CommandBehavior behavior, CancellationToken cancellationToken)
-    {
-        _protocol = protocol;
-        _connection = connection;
-        _behavior = behavior;
-        _cancellationToken = cancellationToken;
-    }
-
     public override int FieldCount => _columnCount;
+
     public override int RecordsAffected => -1;
+
     public override bool HasRows => _hasRows;
+
     public override bool IsClosed => _isClosed;
+
     public override int Depth => 0;
 
     public override object this[int ordinal] => GetValue(ordinal);
+
     public override object this[string name] => GetValue(GetOrdinal(name));
+
+    internal PgDataReader(PgProtocolHandler protocol, PgConnection connection, CommandBehavior behavior, CancellationToken cancellationToken)
+    {
+        this.protocol = protocol;
+        this.connection = connection;
+        this.behavior = behavior;
+        this.cancellationToken = cancellationToken;
+    }
 
     public override bool Read()
     {
@@ -139,9 +145,9 @@ public sealed class PgDataReader : DbDataReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool? TryReadSync()
     {
-        var buffer = _protocol.StreamBuffer;
-        ref var pos = ref _protocol.StreamBufferPos;
-        var len = _protocol.StreamBufferLen;
+        var buffer = protocol.StreamBuffer;
+        ref var pos = ref protocol.StreamBufferPos;
+        var len = protocol.StreamBufferLen;
 
         while (true)
         {
@@ -209,27 +215,28 @@ public sealed class PgDataReader : DbDataReader
     /// <summary>
     /// 非同期読み取り（バッファ不足時）
     /// </summary>
+    // ReSharper disable once ParameterHidesMember
     private async ValueTask<bool> ReadAsyncCoreInternal(CancellationToken cancellationToken)
     {
         while (true)
         {
             // ヘッダーを読み取り
-            await _protocol.EnsureBufferedAsync(5, cancellationToken).ConfigureAwait(false);
+            await protocol.EnsureBufferedAsync(5, cancellationToken).ConfigureAwait(false);
 
-            var buffer = _protocol.StreamBuffer;
-            var pos = _protocol.StreamBufferPos;
+            var buffer = protocol.StreamBuffer;
+            var pos = protocol.StreamBufferPos;
 
             var messageType = (char)buffer[pos];
             var payloadLength = BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(pos + 1)) - 4;
 
             // ヘッダー+ペイロードを一度に確保
-            await _protocol.EnsureBufferedAsync(5 + payloadLength, cancellationToken).ConfigureAwait(false);
+            await protocol.EnsureBufferedAsync(5 + payloadLength, cancellationToken).ConfigureAwait(false);
 
             // EnsureBufferedAsync後にバッファが変わる可能性があるため再取得
-            buffer = _protocol.StreamBuffer;
-            pos = _protocol.StreamBufferPos;
+            buffer = protocol.StreamBuffer;
+            pos = protocol.StreamBufferPos;
 
-            _protocol.StreamBufferPos = pos + 5;
+            protocol.StreamBufferPos = pos + 5;
             var payloadOffset = pos + 5;
             var payload = buffer.AsSpan(payloadOffset, payloadLength);
 
@@ -237,7 +244,7 @@ public sealed class PgDataReader : DbDataReader
             {
                 case 'D': // DataRow
                     ParseDataRow(payload, payloadOffset);
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     if (!_firstRowRead)
                     {
                         _hasRows = true;
@@ -247,7 +254,7 @@ public sealed class PgDataReader : DbDataReader
 
                 case 'T': // RowDescription
                     ParseRowDescription(payload);
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     // 同期パスで継続を試行
                     var syncResult = TryReadSync();
                     if (syncResult.HasValue)
@@ -255,7 +262,7 @@ public sealed class PgDataReader : DbDataReader
                     break;
 
                 case 'C': // CommandComplete
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     // 同期パスで継続を試行
                     syncResult = TryReadSync();
                     if (syncResult.HasValue)
@@ -263,19 +270,19 @@ public sealed class PgDataReader : DbDataReader
                     break;
 
                 case 'Z': // ReadyForQuery
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     _completed = true;
                     return false;
 
                 case 'E': // Error
                     var error = ParseErrorMessage(payload);
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     throw new PgException($"クエリエラー: {error}");
 
                 case '1': // ParseComplete (Extended Query Protocol)
                 case '2': // BindComplete (Extended Query Protocol)
                 case 'n': // NoData (Extended Query Protocol)
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     // 同期パスで継続を試行
                     syncResult = TryReadSync();
                     if (syncResult.HasValue)
@@ -283,7 +290,7 @@ public sealed class PgDataReader : DbDataReader
                     break;
 
                 default:
-                    _protocol.StreamBufferPos += payloadLength;
+                    protocol.StreamBufferPos += payloadLength;
                     // 同期パスで継続を試行
                     syncResult = TryReadSync();
                     if (syncResult.HasValue)
@@ -320,7 +327,7 @@ public sealed class PgDataReader : DbDataReader
     private void ParseDataRow(ReadOnlySpan<byte> payload, int payloadOffset)
     {
         var columnCount = BinaryPrimitives.ReadInt16BigEndian(payload);
-        _rowBuffer = _protocol.StreamBuffer;
+        _rowBuffer = protocol.StreamBuffer;
         _rowBaseOffset = payloadOffset;
 
         var currentOffset = 2;
@@ -382,9 +389,9 @@ public sealed class PgDataReader : DbDataReader
 
         _rowBuffer = null;
 
-        if ((_behavior & CommandBehavior.CloseConnection) != 0)
+        if ((behavior & CommandBehavior.CloseConnection) != 0)
         {
-            _connection.Close();
+            connection.Close();
         }
     }
 
@@ -395,17 +402,17 @@ public sealed class PgDataReader : DbDataReader
     {
         while (true)
         {
-            await _protocol.EnsureBufferedAsync(5, _cancellationToken).ConfigureAwait(false);
+            await protocol.EnsureBufferedAsync(5, cancellationToken).ConfigureAwait(false);
 
-            var buffer = _protocol.StreamBuffer;
-            var pos = _protocol.StreamBufferPos;
+            var buffer = protocol.StreamBuffer;
+            var pos = protocol.StreamBufferPos;
 
             var messageType = (char)buffer[pos];
             var payloadLength = BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(pos + 1)) - 4;
 
-            await _protocol.EnsureBufferedAsync(5 + payloadLength, _cancellationToken).ConfigureAwait(false);
+            await protocol.EnsureBufferedAsync(5 + payloadLength, cancellationToken).ConfigureAwait(false);
 
-            _protocol.StreamBufferPos += 5 + payloadLength;
+            protocol.StreamBufferPos += 5 + payloadLength;
 
             if (messageType == 'Z')
             {

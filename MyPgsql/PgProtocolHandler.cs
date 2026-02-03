@@ -3,6 +3,7 @@ namespace MyPgsql;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Data;
+using System.Globalization;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -12,43 +13,92 @@ using System.Text.RegularExpressions;
 internal sealed partial class PgProtocolHandler : IAsyncDisposable
 {
     private const int DefaultBufferSize = 8192;
-    private const int StreamBufferSize = 65536 * 4;
+    private const int StreamBufferSize = 65536;
 
-    private Socket? _socket;
-    private string _user = "";
-    private string _password = "";
+    private Socket? socket;
+    private string user = string.Empty;
+    private string password = string.Empty;
 
-    private byte[]? _writeBuffer;
-    private byte[]? _readBuffer;
-    private byte[] _streamBuffer = null!;
-    private int _streamBufferPos;
-    private int _streamBufferLen;
+    private byte[]? writeBuffer;
+    private byte[]? readBuffer;
+    private byte[] streamBuffer = null!;
+    private int streamBufferPos;
+    private int streamBufferLen;
 
+    public void Dispose()
+    {
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (socket is not null && socket.Connected)
+        {
+            var terminate = new byte[5];
+            terminate[0] = (byte)'X';
+            BinaryPrimitives.WriteInt32BigEndian(terminate.AsSpan(1), 4);
+
+#pragma warning disable CA1031
+            try
+            {
+                await socket.SendAsync(terminate).ConfigureAwait(false);
+            }
+            catch
+            {
+                //Ignore
+            }
+#pragma warning restore CA1031
+
+            socket.Dispose();
+            socket = null;
+        }
+
+        if (readBuffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(readBuffer);
+            readBuffer = null;
+        }
+
+        if (writeBuffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(writeBuffer);
+            writeBuffer = null;
+        }
+
+        if (streamBuffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(streamBuffer);
+            streamBuffer = null!;
+        }
+    }
+
+    // ReSharper disable ParameterHidesMember
     public async Task ConnectAsync(string host, int port, string database, string user, string password, CancellationToken cancellationToken)
     {
-        _user = user;
-        _password = password;
+        this.user = user;
+        this.password = password;
 
-        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+        socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
         {
             NoDelay = true,
-            ReceiveBufferSize = 65536 * 4,
+            ReceiveBufferSize = 65536,
             SendBufferSize = 65536
         };
 
-        await _socket.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
+        await socket.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
 
-        _streamBuffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
-        _writeBuffer = ArrayPool<byte>.Shared.Rent(DefaultBufferSize);
-        _readBuffer = ArrayPool<byte>.Shared.Rent(DefaultBufferSize);
+        streamBuffer = ArrayPool<byte>.Shared.Rent(StreamBufferSize);
+        writeBuffer = ArrayPool<byte>.Shared.Rent(DefaultBufferSize);
+        readBuffer = ArrayPool<byte>.Shared.Rent(DefaultBufferSize);
 
         await SendStartupMessageAsync(database, user, cancellationToken).ConfigureAwait(false);
         await HandleAuthenticationAsync(cancellationToken).ConfigureAwait(false);
+        // ReSharper restore ParameterHidesMember
     }
 
-    internal byte[] StreamBuffer => _streamBuffer;
-    internal ref int StreamBufferPos => ref _streamBufferPos;
-    internal int StreamBufferLen => _streamBufferLen;
+    internal byte[] StreamBuffer => streamBuffer;
+    internal ref int StreamBufferPos => ref streamBufferPos;
+    internal int StreamBufferLen => streamBufferLen;
 
     /// <summary>
     /// パラメーター名を抽出する正規表現
@@ -59,7 +109,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     /// <summary>
     /// SQL内のパラメーター名をPostgreSQL位置パラメーター ($1, $2, ...) に変換
     /// </summary>
-    private static (string convertedSql, List<string> parameterOrder) ConvertToPositionalParameters(string sql, IReadOnlyList<PgParameter> parameters)
+    private static (string ConvertedSql, List<string> ParameterOrder) ConvertToPositionalParameters(string sql)
     {
         var parameterOrder = new List<string>();
         var paramNameToIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -82,7 +132,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     /// <summary>
     /// パラメーターをバイナリ形式でエンコード
     /// </summary>
-    private static (byte[] data, int length, int oid) EncodeParameter(PgParameter parameter)
+    private static (byte[] Data, int Length, int Oid) EncodeParameter(PgParameter parameter)
     {
         var value = parameter.Value;
         if (value is null || value == DBNull.Value)
@@ -95,31 +145,31 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             case DbType.Int16:
                 {
                     var buffer = new byte[2];
-                    BinaryPrimitives.WriteInt16BigEndian(buffer, Convert.ToInt16(value));
+                    BinaryPrimitives.WriteInt16BigEndian(buffer, Convert.ToInt16(value, CultureInfo.InvariantCulture));
                     return (buffer, 2, 21); // int2
                 }
             case DbType.Int32:
                 {
                     var buffer = new byte[4];
-                    BinaryPrimitives.WriteInt32BigEndian(buffer, Convert.ToInt32(value));
+                    BinaryPrimitives.WriteInt32BigEndian(buffer, Convert.ToInt32(value, CultureInfo.InvariantCulture));
                     return (buffer, 4, 23); // int4
                 }
             case DbType.Int64:
                 {
                     var buffer = new byte[8];
-                    BinaryPrimitives.WriteInt64BigEndian(buffer, Convert.ToInt64(value));
+                    BinaryPrimitives.WriteInt64BigEndian(buffer, Convert.ToInt64(value, CultureInfo.InvariantCulture));
                     return (buffer, 8, 20); // int8
                 }
             case DbType.Single:
                 {
                     var buffer = new byte[4];
-                    BinaryPrimitives.WriteInt32BigEndian(buffer, BitConverter.SingleToInt32Bits(Convert.ToSingle(value)));
+                    BinaryPrimitives.WriteInt32BigEndian(buffer, BitConverter.SingleToInt32Bits(Convert.ToSingle(value, CultureInfo.InvariantCulture)));
                     return (buffer, 4, 700); // float4
                 }
             case DbType.Double:
                 {
                     var buffer = new byte[8];
-                    BinaryPrimitives.WriteInt64BigEndian(buffer, BitConverter.DoubleToInt64Bits(Convert.ToDouble(value)));
+                    BinaryPrimitives.WriteInt64BigEndian(buffer, BitConverter.DoubleToInt64Bits(Convert.ToDouble(value, CultureInfo.InvariantCulture)));
                     return (buffer, 8, 701); // float8
                 }
             case DbType.Boolean:
@@ -131,7 +181,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             case DbType.DateTime or DbType.DateTime2 or DbType.DateTimeOffset:
                 {
                     // PostgreSQLのtimestamp形式: 2000-01-01からのマイクロ秒数
-                    var dt = value is DateTimeOffset dto ? dto.UtcDateTime : Convert.ToDateTime(value);
+                    var dt = value is DateTimeOffset dto ? dto.UtcDateTime : Convert.ToDateTime(value, CultureInfo.InvariantCulture);
                     var postgresEpoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                     var microseconds = (dt.ToUniversalTime() - postgresEpoch).Ticks / 10;
                     var buffer = new byte[8];
@@ -141,7 +191,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             case DbType.Date:
                 {
                     // PostgreSQLのdate形式: 2000-01-01からの日数
-                    var dt = Convert.ToDateTime(value);
+                    var dt = Convert.ToDateTime(value, CultureInfo.InvariantCulture);
                     var postgresEpoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                     var days = (int)(dt.Date - postgresEpoch).TotalDays;
                     var buffer = new byte[4];
@@ -184,12 +234,12 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         // SQL内のパラメーター名を位置パラメーターに変換
-        var (convertedSql, parameterOrder) = ConvertToPositionalParameters(sql, parameters);
+        var (convertedSql, parameterOrder) = ConvertToPositionalParameters(sql);
         var sqlBytes = Encoding.UTF8.GetBytes(convertedSql);
 
         // パラメーターをエンコード
         var parameterLookup = parameters.ToDictionary(p => p.ParameterName, StringComparer.OrdinalIgnoreCase);
-        var encodedParams = new List<(byte[] data, int length, int oid)>();
+        var encodedParams = new List<(byte[] Data, int Length, int Oid)>();
         foreach (var paramName in parameterOrder)
         {
             if (parameterLookup.TryGetValue(paramName, out var param))
@@ -206,12 +256,12 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
         // バッファサイズ計算
         // Parse: 1 + 4 + 1(name) + sqlLen + 1 + 2(param count) + 4 * paramCount (param OIDs)
-        var parsePayloadLen = 1 + sqlBytes.Length + 1 + 2 + 4 * paramCount;
+        var parsePayloadLen = 1 + sqlBytes.Length + 1 + 2 + (4 * paramCount);
         var parseLen = 1 + 4 + parsePayloadLen;
 
         // Bind: 1 + 4 + 1(portal) + 1(stmt) + 2(format count) + 2 * paramCount (format codes)
         //       + 2(param count) + sum(4 + param data length) + 2(result format count) + 2(result format)
-        var bindPayloadLen = 1 + 1 + 2 + 2 * paramCount + 2;
+        var bindPayloadLen = 1 + 1 + 2 + (2 * paramCount) + 2;
         foreach (var (data, length, _) in encodedParams)
         {
             bindPayloadLen += 4 + (length > 0 ? length : 0);
@@ -309,7 +359,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), 4);
             offset += 4;
 
-            await _socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
+            await socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -388,7 +438,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), 4);
             offset += 4;
 
-            await _socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
+            await socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -421,31 +471,31 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         while (true)
         {
             await EnsureBufferedAsync(5, cancellationToken).ConfigureAwait(false);
-            var messageType = (char)_streamBuffer[_streamBufferPos];
-            var length = BinaryPrimitives.ReadInt32BigEndian(_streamBuffer.AsSpan(_streamBufferPos + 1)) - 4;
-            _streamBufferPos += 5;
+            var messageType = (char)streamBuffer[streamBufferPos];
+            var length = BinaryPrimitives.ReadInt32BigEndian(streamBuffer.AsSpan(streamBufferPos + 1)) - 4;
+            streamBufferPos += 5;
 
             await EnsureBufferedAsync(length, cancellationToken).ConfigureAwait(false);
-            var payload = _streamBuffer.AsSpan(_streamBufferPos, length);
+            var payload = streamBuffer.AsSpan(streamBufferPos, length);
 
             switch (messageType)
             {
                 case 'C':
                     affectedRows = ParseCommandComplete(payload);
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     break;
 
                 case 'Z':
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     return affectedRows;
 
                 case 'E':
                     var error = ParseErrorMessage(payload);
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     throw new PgException($"クエリエラー: {error}");
 
                 default:
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     break;
             }
         }
@@ -463,31 +513,31 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         while (true)
         {
             await EnsureBufferedAsync(5, cancellationToken).ConfigureAwait(false);
-            var messageType = (char)_streamBuffer[_streamBufferPos];
-            var length = BinaryPrimitives.ReadInt32BigEndian(_streamBuffer.AsSpan(_streamBufferPos + 1)) - 4;
-            _streamBufferPos += 5;
+            var messageType = (char)streamBuffer[streamBufferPos];
+            var length = BinaryPrimitives.ReadInt32BigEndian(streamBuffer.AsSpan(streamBufferPos + 1)) - 4;
+            streamBufferPos += 5;
 
             await EnsureBufferedAsync(length, cancellationToken).ConfigureAwait(false);
-            var payload = _streamBuffer.AsSpan(_streamBufferPos, length);
+            var payload = streamBuffer.AsSpan(streamBufferPos, length);
 
             switch (messageType)
             {
                 case 'C':
                     affectedRows = ParseCommandComplete(payload);
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     break;
 
                 case 'Z':
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     return affectedRows;
 
                 case 'E':
                     var error = ParseErrorMessage(payload);
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     throw new PgException($"クエリエラー: {error}");
 
                 default:
-                    _streamBufferPos += length;
+                    streamBufferPos += length;
                     break;
             }
         }
@@ -499,8 +549,8 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var queryByteCount = sqlByteCount + 1; // +1 for null terminator
         var totalLength = 1 + 4 + queryByteCount;
 
-        var buffer = totalLength <= _writeBuffer!.Length
-            ? _writeBuffer
+        var buffer = totalLength <= writeBuffer!.Length
+            ? writeBuffer
             : ArrayPool<byte>.Shared.Rent(totalLength);
 
         try
@@ -510,11 +560,11 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             Encoding.UTF8.GetBytes(sql, buffer.AsSpan(5));
             buffer[5 + sqlByteCount] = 0; // null terminator
 
-            await _socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            if (!ReferenceEquals(buffer, _writeBuffer))
+            if (!ReferenceEquals(buffer, writeBuffer))
                 ArrayPool<byte>.Shared.Return(buffer);
         }
     }
@@ -522,7 +572,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal ValueTask EnsureBufferedAsync(int count, CancellationToken cancellationToken)
     {
-        var available = _streamBufferLen - _streamBufferPos;
+        var available = streamBufferLen - streamBufferPos;
         if (available >= count)
             return ValueTask.CompletedTask;
 
@@ -532,35 +582,35 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private async ValueTask EnsureBufferedAsyncCore(int count, int available, CancellationToken cancellationToken)
     {
         var needed = count - available;
-        var freeSpace = _streamBuffer.Length - _streamBufferLen;
+        var freeSpace = streamBuffer.Length - streamBufferLen;
 
         // 空き容量が足りない場合のみシフトまたは拡張
         if (freeSpace < needed)
         {
             // バッファ全体で足りるならシフト
-            if (_streamBuffer.Length >= count)
+            if (streamBuffer.Length >= count)
             {
                 if (available > 0)
                 {
-                    _streamBuffer.AsSpan(_streamBufferPos, available).CopyTo(_streamBuffer);
+                    streamBuffer.AsSpan(streamBufferPos, available).CopyTo(streamBuffer);
                 }
-                _streamBufferPos = 0;
-                _streamBufferLen = available;
-                freeSpace = _streamBuffer.Length - available;
+                streamBufferPos = 0;
+                streamBufferLen = available;
+                freeSpace = streamBuffer.Length - available;
             }
             else
             {
                 // バッファ拡張が必要
-                var newSize = Math.Max(_streamBuffer.Length * 2, count);
+                var newSize = Math.Max(streamBuffer.Length * 2, count);
                 var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
                 if (available > 0)
                 {
-                    _streamBuffer.AsSpan(_streamBufferPos, available).CopyTo(newBuffer);
+                    streamBuffer.AsSpan(streamBufferPos, available).CopyTo(newBuffer);
                 }
-                ArrayPool<byte>.Shared.Return(_streamBuffer);
-                _streamBuffer = newBuffer;
-                _streamBufferPos = 0;
-                _streamBufferLen = available;
+                ArrayPool<byte>.Shared.Return(streamBuffer);
+                streamBuffer = newBuffer;
+                streamBufferPos = 0;
+                streamBufferLen = available;
                 freeSpace = newBuffer.Length - available;
             }
         }
@@ -568,41 +618,41 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         // 必要な量を読み取る（可能な限り多く読み取る）
         do
         {
-            var read = await _socket!.ReceiveAsync(
-                _streamBuffer.AsMemory(_streamBufferLen, freeSpace),
+            var read = await socket!.ReceiveAsync(
+                streamBuffer.AsMemory(streamBufferLen, freeSpace),
                 cancellationToken).ConfigureAwait(false);
 
             if (read == 0)
                 throw new PgException("接続が閉じられました");
 
-            _streamBufferLen += read;
+            streamBufferLen += read;
             freeSpace -= read;
         }
-        while (_streamBufferLen - _streamBufferPos < count);
+        while (streamBufferLen - streamBufferPos < count);
 
         // 追加で利用可能なデータがあれば貪欲に読み取る（ノンブロッキング）
         while (freeSpace > 0)
         {
-            var socketAvailable = _socket!.Available;
+            var socketAvailable = socket!.Available;
             if (socketAvailable <= 0)
                 break;
 
             var toRead = Math.Min(socketAvailable, freeSpace);
-            var extraRead = await _socket.ReceiveAsync(
-                _streamBuffer.AsMemory(_streamBufferLen, toRead),
+            var extraRead = await socket.ReceiveAsync(
+                streamBuffer.AsMemory(streamBufferLen, toRead),
                 cancellationToken).ConfigureAwait(false);
 
             if (extraRead == 0)
                 break;
 
-            _streamBufferLen += extraRead;
+            streamBufferLen += extraRead;
             freeSpace -= extraRead;
         }
     }
 
     private async ValueTask SendStartupMessageAsync(string database, string user, CancellationToken cancellationToken)
     {
-        var buffer = _writeBuffer!;
+        var buffer = writeBuffer!;
         var offset = 4;
 
         BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), 196608);
@@ -618,7 +668,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
         BinaryPrimitives.WriteInt32BigEndian(buffer, offset);
 
-        await _socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
+        await socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask HandleAuthenticationAsync(CancellationToken cancellationToken)
@@ -665,7 +715,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 break;
 
             case 3: // AuthenticationCleartextPassword
-                await SendPasswordMessageAsync(_password, cancellationToken).ConfigureAwait(false);
+                await SendPasswordMessageAsync(password, cancellationToken).ConfigureAwait(false);
                 break;
 
             case 5: // AuthenticationMD5Password
@@ -696,7 +746,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             Encoding.UTF8.GetBytes(password, buffer.AsSpan(5));
             buffer[totalLength - 1] = 0;
 
-            await _socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -709,7 +759,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         Span<byte> innerHash = stackalloc byte[16];
         Span<byte> outerHash = stackalloc byte[16];
 
-        var innerInput = Encoding.UTF8.GetBytes(_password + _user);
+        var innerInput = Encoding.UTF8.GetBytes(password + user);
         MD5.HashData(innerInput, innerHash);
 
         Span<byte> innerHex = stackalloc byte[32];
@@ -767,7 +817,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private string ComputeScramClientFinal(string clientFirstBare, string serverFirstStr, string clientFinalWithoutProof, byte[] salt, int iterations)
     {
         Span<byte> saltedPassword = stackalloc byte[32];
-        Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(_password), salt, saltedPassword, iterations, HashAlgorithmName.SHA256);
+        Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, saltedPassword, iterations, HashAlgorithmName.SHA256);
 
         Span<byte> clientKey = stackalloc byte[32];
         HMACSHA256.HashData(saltedPassword, "Client Key"u8, clientKey);
@@ -807,7 +857,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             offset += 4;
             clientFirstBytes.CopyTo(buffer.AsSpan(offset));
 
-            await _socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -827,7 +877,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(1), 4 + responseBytes.Length);
             responseBytes.CopyTo(buffer.AsSpan(5));
 
-            await _socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -837,10 +887,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
     private async Task<(char type, byte[] payload, int length)> ReadMessageAsync(CancellationToken cancellationToken)
     {
-        await ReadExactAsync(_readBuffer.AsMemory(0, 5), cancellationToken).ConfigureAwait(false);
+        await ReadExactAsync(readBuffer.AsMemory(0, 5), cancellationToken).ConfigureAwait(false);
 
-        var type = (char)_readBuffer![0];
-        var length = BinaryPrimitives.ReadInt32BigEndian(_readBuffer.AsSpan(1)) - 4;
+        var type = (char)readBuffer![0];
+        var length = BinaryPrimitives.ReadInt32BigEndian(readBuffer.AsSpan(1)) - 4;
 
         if (length == 0)
             return (type, Array.Empty<byte>(), 0);
@@ -856,7 +906,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var read = await _socket!.ReceiveAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
+            var read = await socket!.ReceiveAsync(buffer[offset..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
                 throw new PgException("接続が閉じられました");
             offset += read;
@@ -883,10 +933,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void HexEncode(ReadOnlySpan<byte> source, Span<byte> destination)
     {
-        for (int i = 0; i < source.Length; i++)
+        for (var i = 0; i < source.Length; i++)
         {
             destination[i * 2] = HexChars[source[i] >> 4];
-            destination[i * 2 + 1] = HexChars[source[i] & 0xF];
+            destination[(i * 2) + 1] = HexChars[source[i] & 0xF];
         }
     }
 
@@ -895,7 +945,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         var message = Encoding.UTF8.GetString(payload.TrimEnd((byte)0));
         var lastSpace = message.LastIndexOf(' ');
         if (lastSpace >= 0 && int.TryParse(message.AsSpan(lastSpace + 1), out var count))
+        {
             return count;
+        }
         return 0;
     }
 
@@ -907,7 +959,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             var fieldType = (char)payload[offset++];
             var end = payload[offset..].IndexOf((byte)0);
             if (fieldType == 'M')
+            {
                 return Encoding.UTF8.GetString(payload.Slice(offset, end));
+            }
             offset += end + 1;
         }
         return "Unknown error";
@@ -920,53 +974,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         {
             var idx = part.IndexOf('=');
             if (idx > 0)
+            {
                 result[part[..idx]] = part[(idx + 1)..];
+            }
         }
         return result;
-    }
-
-    public void Dispose()
-    {
-        DisposeAsync().AsTask().GetAwaiter().GetResult();
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_socket is not null && _socket.Connected)
-        {
-            var terminate = new byte[5];
-            terminate[0] = (byte)'X';
-            BinaryPrimitives.WriteInt32BigEndian(terminate.AsSpan(1), 4);
-
-            try
-            {
-                await _socket.SendAsync(terminate).ConfigureAwait(false);
-            }
-            catch
-            {
-                // 無視
-            }
-
-            _socket.Dispose();
-            _socket = null;
-        }
-
-        if (_readBuffer is not null)
-        {
-            ArrayPool<byte>.Shared.Return(_readBuffer);
-            _readBuffer = null;
-        }
-
-        if (_writeBuffer is not null)
-        {
-            ArrayPool<byte>.Shared.Return(_writeBuffer);
-            _writeBuffer = null;
-        }
-
-        if (_streamBuffer is not null)
-        {
-            ArrayPool<byte>.Shared.Return(_streamBuffer);
-            _streamBuffer = null!;
-        }
     }
 }
