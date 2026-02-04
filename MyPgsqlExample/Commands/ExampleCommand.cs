@@ -150,7 +150,6 @@ public sealed class ExampleCommand : BaseCommand, ICommandHandler
                     {
                         Console.WriteLine($"  [{i}] {reader.GetName(i)}: DataTypeName={reader.GetDataTypeName(i)}, FieldType={reader.GetFieldType(i).Name}");
                     }
-                    Console.WriteLine();
 
                     // GetValue
                     Console.WriteLine("GetValue:");
@@ -159,7 +158,6 @@ public sealed class ExampleCommand : BaseCommand, ICommandHandler
                         var value = reader.GetValue(i);
                         Console.WriteLine($"  [{i}] {reader.GetName(i)}: Value={value}, Type={value.GetType().Name}");
                     }
-                    Console.WriteLine();
 
                     // GetValues
                     Console.WriteLine("GetValues:");
@@ -169,8 +167,9 @@ public sealed class ExampleCommand : BaseCommand, ICommandHandler
                     {
                         Console.WriteLine($"  [{i}] {reader.GetName(i)}: Value={values[i]}, Type={values[i].GetType().Name}");
                     }
-                    Console.WriteLine();
                 }
+
+                Console.WriteLine();
             }
 
             //--------------------------------------------------------------------------------

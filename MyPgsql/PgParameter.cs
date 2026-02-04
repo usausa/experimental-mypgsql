@@ -46,6 +46,34 @@ public sealed class PgParameter : DbParameter
     {
         ParameterName = parameterName;
         Value = value;
+        DbType = InferDbType(value);
+    }
+
+    //--------------------------------------------------------------------------------
+    // Helpers
+    //--------------------------------------------------------------------------------
+
+    private static DbType InferDbType(object? value)
+    {
+        return value switch
+        {
+            null => DbType.Object,
+            DBNull => DbType.Object,
+            short => DbType.Int16,
+            int => DbType.Int32,
+            long => DbType.Int64,
+            float => DbType.Single,
+            double => DbType.Double,
+            decimal => DbType.Decimal,
+            bool => DbType.Boolean,
+            DateTime => DbType.DateTime,
+            DateTimeOffset => DbType.DateTimeOffset,
+            DateOnly => DbType.Date,
+            Guid => DbType.Guid,
+            byte[] => DbType.Binary,
+            string => DbType.String,
+            _ => DbType.String
+        };
     }
 
     //--------------------------------------------------------------------------------

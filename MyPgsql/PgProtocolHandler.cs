@@ -485,10 +485,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 }
             default:
                 {
-                    // Text encoding for other types
+                    // Text encoding for other types (String, etc.)
                     var strValue = value.ToString() ?? string.Empty;
                     var bytes = Encoding.UTF8.GetBytes(strValue);
-                    return (bytes, bytes.Length, 0); // text (OID 0 means server should infer)
+                    return (bytes, bytes.Length, OidText);
                 }
         }
     }
