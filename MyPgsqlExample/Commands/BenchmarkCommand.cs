@@ -7,11 +7,8 @@ using MyPgsqlExample.Benchmarks;
 using Smart.CommandLine.Hosting;
 
 [Command("benchmark", "Benchmark")]
-public sealed class BenchmarkCommand : ICommandHandler
+public sealed class BenchmarkCommand : BaseCommand, ICommandHandler
 {
-    // TODO
-    private const string ConnectionString = "Host=mysql-server;Port=5432;Database=test;Username=test;Password=test";
-
     public ValueTask ExecuteAsync(CommandContext context)
     {
         Environment.SetEnvironmentVariable(PostgresBenchmark.ConnectionStringVariable, ConnectionString);

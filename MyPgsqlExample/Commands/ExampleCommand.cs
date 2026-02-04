@@ -7,22 +7,23 @@ using MyPgsql;
 using Smart.CommandLine.Hosting;
 
 [Command("example", "Usage examples")]
-public sealed class ExampleCommand : ICommandHandler
+public sealed class ExampleCommand : BaseCommand, ICommandHandler
 {
     public async ValueTask ExecuteAsync(CommandContext context)
     {
-        // TODO
-        const string connectionString = "Host=mysql-server;Port=5432;Database=test;Username=test;Password=test";
-
 #pragma warning disable CA1031
         try
         {
-            await using var connection = new PgConnection(connectionString);
+            await using var connection = new PgConnection(ConnectionString);
             await connection.OpenAsync();
-            Console.WriteLine("接続成功！\n");
 
-            // === 1. INSERT ===
-            Console.WriteLine("=== INSERT ===");
+            Console.WriteLine("Connected.");
+            Console.WriteLine();
+
+            //--------------------------------------------------------------------------------
+            // 1. INSERT
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== INSERT ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "INSERT INTO users (id, name, email, created_at) VALUES (@id, @name, @email, @created_at)";
@@ -32,34 +33,43 @@ public sealed class ExampleCommand : ICommandHandler
                 cmd.Parameters.Add(new PgParameter("@created_at", DbType.DateTime) { Value = DateTime.Now });
 
                 var inserted = await cmd.ExecuteNonQueryAsync();
-                Console.WriteLine($"挿入: {inserted} 行\n");
+                Console.WriteLine($"INSERT: {inserted} rows");
+                Console.WriteLine();
             }
 
-            // === 2. SELECT (単一値) ===
-            Console.WriteLine("=== SELECT (ExecuteScalar) ===");
+            //--------------------------------------------------------------------------------
+            // 2. SELECT (ExecuteScalar)
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== SELECT (ExecuteScalar) ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "SELECT COUNT(*) FROM users";
                 var count = await cmd.ExecuteScalarAsync();
-                Console.WriteLine($"ユーザー数: {count}\n");
+                Console.WriteLine($"COUNT: {count}");
+                Console.WriteLine();
             }
 
-            // === 3. SELECT (DataReader) ===
-            Console.WriteLine("=== SELECT (DataReader) ===");
+            //--------------------------------------------------------------------------------
+            // 3. SELECT (DataReader)
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== SELECT (DataReader) ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "SELECT id, name, email, created_at FROM users WHERE id = @id";
                 cmd.Parameters.Add(new PgParameter("@id", DbType.Int32) { Value = 2001 });
 
                 await using var reader = await cmd.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                if (await reader.ReadAsync())
                 {
-                    Console.WriteLine($"ID: {reader.GetInt32(0)}, Name: {reader.GetString(1)}, Email: {reader.GetString(2)}, Created: {reader.GetDateTime(3)}\n");
+                    Console.WriteLine($"Id=[{reader.GetInt32(0)}], Name=[{reader.GetString(1)}], Email=[{reader.GetString(2)}], Created=[{reader.GetDateTime(3)}]");
                 }
+                Console.WriteLine();
             }
 
-            // === 4. UPDATE ===
-            Console.WriteLine("=== UPDATE ===");
+            //--------------------------------------------------------------------------------
+            // 4. UPDATE
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== UPDATE ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "UPDATE users SET name = @name, email = @email WHERE id = @id";
@@ -68,11 +78,14 @@ public sealed class ExampleCommand : ICommandHandler
                 cmd.Parameters.Add(new PgParameter("@email", DbType.String) { Value = "updated.adonet@example.com" });
 
                 var updated = await cmd.ExecuteNonQueryAsync();
-                Console.WriteLine($"更新: {updated} 行\n");
+                Console.WriteLine($"UPDATE: {updated} rows");
+                Console.WriteLine();
             }
 
-            // === 5. Transaction Demo ===
-            Console.WriteLine("=== TRANSACTION ===");
+            //--------------------------------------------------------------------------------
+            // 5. Transaction
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== TRANSACTION ====");
             await using (var transaction = await connection.BeginTransactionAsync())
             {
                 try
@@ -89,18 +102,21 @@ public sealed class ExampleCommand : ICommandHandler
                     }
 
                     await transaction.CommitAsync();
-                    Console.WriteLine("トランザクションコミット成功\n");
+                    Console.WriteLine("TRANSACTION COMMIT");
                 }
                 catch
                 {
                     await transaction.RollbackAsync();
-                    Console.WriteLine("トランザクションロールバック\n");
+                    Console.WriteLine("TRANSACTION ROLLBACK");
                     throw;
                 }
+                Console.WriteLine();
             }
 
-            // === 6. SELECT (全件確認) ===
-            Console.WriteLine("=== SELECT (全件確認) ===");
+            //--------------------------------------------------------------------------------
+            // 6. SELECT (All)
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== SELECT (All) ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "SELECT id, name, email FROM users ORDER BY id";
@@ -116,8 +132,10 @@ public sealed class ExampleCommand : ICommandHandler
                 Console.WriteLine();
             }
 
-            // === 7. GetValue/GetValues/GetDataTypeName/GetFieldType テスト ===
-            Console.WriteLine("=== GetValue/GetValues/GetDataTypeName/GetFieldType テスト ===");
+            //--------------------------------------------------------------------------------
+            // 7. GetValue/GetValues/GetDataTypeName/GetFieldType
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== GetValue/GetValues/GetDataTypeName/GetFieldType ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "SELECT id, name, email, created_at FROM users WHERE id = @id";
@@ -126,16 +144,16 @@ public sealed class ExampleCommand : ICommandHandler
                 await using var reader = await cmd.ExecuteReaderAsync();
                 if (await reader.ReadAsync())
                 {
-                    // カラム情報の確認
-                    Console.WriteLine("カラム情報:");
+                    // Column info
+                    Console.WriteLine("COLUMN:");
                     for (var i = 0; i < reader.FieldCount; i++)
                     {
                         Console.WriteLine($"  [{i}] {reader.GetName(i)}: DataTypeName={reader.GetDataTypeName(i)}, FieldType={reader.GetFieldType(i).Name}");
                     }
                     Console.WriteLine();
 
-                    // GetValue で型を確認
-                    Console.WriteLine("GetValue による取得:");
+                    // GetValue
+                    Console.WriteLine("GetValue:");
                     for (var i = 0; i < reader.FieldCount; i++)
                     {
                         var value = reader.GetValue(i);
@@ -143,8 +161,8 @@ public sealed class ExampleCommand : ICommandHandler
                     }
                     Console.WriteLine();
 
-                    // GetValues で一括取得
-                    Console.WriteLine("GetValues による一括取得:");
+                    // GetValues
+                    Console.WriteLine("GetValues:");
                     var values = new object[reader.FieldCount];
                     reader.GetValues(values);
                     for (var i = 0; i < values.Length; i++)
@@ -155,8 +173,10 @@ public sealed class ExampleCommand : ICommandHandler
                 }
             }
 
-            // === 8. DELETE (クリーンアップ) ===
-            Console.WriteLine("=== DELETE (クリーンアップ) ===");
+            //--------------------------------------------------------------------------------
+            // 8. DELETE (Cleanup)
+            //--------------------------------------------------------------------------------
+            Console.WriteLine("==== DELETE (Cleanup) ====");
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = "DELETE FROM users WHERE id IN (@id1, @id2)";
@@ -164,12 +184,13 @@ public sealed class ExampleCommand : ICommandHandler
                 cmd.Parameters.Add(new PgParameter("@id2", DbType.Int32) { Value = 2002 });
 
                 var deleted = await cmd.ExecuteNonQueryAsync();
-                Console.WriteLine($"削除: {deleted} 行\n");
+                Console.WriteLine($"DELETE: {deleted} rows");
+                Console.WriteLine();
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"エラー: {ex.Message}");
+            Console.WriteLine($"Error: {ex.Message}");
             Console.WriteLine(ex.StackTrace);
         }
 #pragma warning restore CA1031
