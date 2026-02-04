@@ -20,6 +20,10 @@ public sealed class PgConnection : DbConnection
     private PgTransaction? currentTransaction;
 #pragma warning restore CA2213
 
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
     [AllowNull]
     public override string ConnectionString
     {
@@ -42,6 +46,10 @@ public sealed class PgConnection : DbConnection
     internal PgProtocolHandler Protocol => protocol ?? throw new InvalidOperationException("Connection is not open.");
 
     internal PgTransaction? CurrentTransaction => currentTransaction;
+
+    //--------------------------------------------------------------------------------
+    // Constructors
+    //--------------------------------------------------------------------------------
 
     public PgConnection()
     {
@@ -66,6 +74,10 @@ public sealed class PgConnection : DbConnection
         await CloseAsync().ConfigureAwait(false);
         await base.DisposeAsync().ConfigureAwait(false);
     }
+
+    //--------------------------------------------------------------------------------
+    //
+    //--------------------------------------------------------------------------------
 
     public override void Open()
     {
@@ -127,6 +139,10 @@ public sealed class PgConnection : DbConnection
         state = ConnectionState.Closed;
     }
 
+    //--------------------------------------------------------------------------------
+    // Transaction methods
+    //--------------------------------------------------------------------------------
+
     protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
     {
         return BeginTransactionAsync(isolationLevel, CancellationToken.None).GetAwaiter().GetResult();
@@ -168,6 +184,10 @@ public sealed class PgConnection : DbConnection
         currentTransaction = null;
     }
 
+    //--------------------------------------------------------------------------------
+    // Command creation methods
+    //--------------------------------------------------------------------------------
+
     public new PgCommand CreateCommand()
     {
         return new PgCommand { Connection = this };
@@ -177,6 +197,10 @@ public sealed class PgConnection : DbConnection
     {
         return CreateCommand();
     }
+
+    //--------------------------------------------------------------------------------
+    // Overrides
+    //--------------------------------------------------------------------------------
 
     public override void ChangeDatabase(string databaseName)
     {

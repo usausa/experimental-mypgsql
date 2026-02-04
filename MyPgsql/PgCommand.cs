@@ -7,6 +7,10 @@ using System.Diagnostics.CodeAnalysis;
 #pragma warning disable CA2100
 public sealed class PgCommand : DbCommand
 {
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
     [AllowNull]
     public override string CommandText { get; set; } = string.Empty;
 
@@ -38,6 +42,10 @@ public sealed class PgCommand : DbCommand
 
     protected override DbParameterCollection DbParameterCollection => Parameters;
 
+    //--------------------------------------------------------------------------------
+    // Constructors
+    //--------------------------------------------------------------------------------
+
     public PgCommand()
     {
     }
@@ -52,6 +60,10 @@ public sealed class PgCommand : DbCommand
         CommandText = commandText;
         Connection = connection;
     }
+
+    //--------------------------------------------------------------------------------
+    // Command methods
+    //--------------------------------------------------------------------------------
 
     public override void Cancel()
     {
@@ -113,6 +125,10 @@ public sealed class PgCommand : DbCommand
         return new PgDataReader(Connection!.Protocol, Connection, behavior, cancellationToken);
     }
 
+    //--------------------------------------------------------------------------------
+    // Overrides
+    //--------------------------------------------------------------------------------
+
     public override void Prepare()
     {
     }
@@ -121,6 +137,10 @@ public sealed class PgCommand : DbCommand
     {
         return new PgParameter();
     }
+
+    //--------------------------------------------------------------------------------
+    // Helpers
+    //--------------------------------------------------------------------------------
 
     private void ValidateCommand()
     {

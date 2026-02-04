@@ -19,18 +19,26 @@ public sealed class PgDataReader : DbDataReader
     private readonly CommandBehavior behavior;
     private readonly CancellationToken cancellation;
 
-    private PgColumnInfo[] columns = null!;
+    private PgColumnInfo[] columns = default!;
+    private bool isClosed;
     private int fieldCount;
     private bool hasRows;
     private bool firstRowRead;
-    private bool isClosed;
     private bool completed;
 
     // Row data buffer
-    private byte[] rowBuffer = null!;
+    private byte[] rowBuffer = default!;
     private int rowBaseOffset;
-    private int[] offsets = null!;
-    private int[] lengths = null!;
+    private int[] offsets = default!;
+    private int[] lengths = default!;
+
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
+    public override bool IsClosed => isClosed;
+
+    public override int Depth => 0;
 
     public override int FieldCount => fieldCount;
 
@@ -38,13 +46,13 @@ public sealed class PgDataReader : DbDataReader
 
     public override bool HasRows => hasRows;
 
-    public override bool IsClosed => isClosed;
-
-    public override int Depth => 0;
-
     public override object this[int ordinal] => GetValue(ordinal);
 
     public override object this[string name] => GetValue(GetOrdinal(name));
+
+    //--------------------------------------------------------------------------------
+    // Constructor
+    //--------------------------------------------------------------------------------
 
     internal PgDataReader(PgProtocolHandler protocol, PgConnection connection, CommandBehavior behavior, CancellationToken cancellation)
     {
@@ -53,6 +61,85 @@ public sealed class PgDataReader : DbDataReader
         this.behavior = behavior;
         this.cancellation = cancellation;
     }
+
+    public override async ValueTask DisposeAsync()
+    {
+        await CloseAsync().ConfigureAwait(false);
+        await base.DisposeAsync().ConfigureAwait(false);
+    }
+
+    public override void Close()
+    {
+        CloseAsync().GetAwaiter().GetResult();
+    }
+
+    public override async Task CloseAsync()
+    {
+        if (isClosed)
+        {
+            return;
+        }
+        isClosed = true;
+
+        // If not completed, drain messages until ReadyForQuery
+        if (!completed)
+        {
+            await DrainToReadyForQueryAsync().ConfigureAwait(false);
+        }
+
+        // Return buffers to pool
+        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+        if (columns is not null)
+        {
+            ArrayPool<PgColumnInfo>.Shared.Return(columns);
+            columns = default!;
+        }
+        if (offsets is not null)
+        {
+            ArrayPool<int>.Shared.Return(offsets);
+            offsets = default!;
+        }
+        if (lengths is not null)
+        {
+            ArrayPool<int>.Shared.Return(lengths);
+            lengths = default!;
+        }
+        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+
+        rowBuffer = default!;
+
+        if ((behavior & CommandBehavior.CloseConnection) != 0)
+        {
+            await connection.CloseAsync().ConfigureAwait(false);
+        }
+    }
+
+    //--------------------------------------------------------------------------------
+    // GetEnumerator
+    //--------------------------------------------------------------------------------
+
+    public override IEnumerator GetEnumerator()
+    {
+        return new DbEnumerator(this, closeReader: false);
+    }
+
+    //--------------------------------------------------------------------------------
+    // NextResult
+    //--------------------------------------------------------------------------------
+
+    public override bool NextResult()
+    {
+        return false;
+    }
+
+    public override Task<bool> NextResultAsync(CancellationToken cancellationToken)
+    {
+        return Task.FromResult(false);
+    }
+
+    //--------------------------------------------------------------------------------
+    // Read
+    //--------------------------------------------------------------------------------
 
     public override bool Read()
     {
@@ -115,7 +202,7 @@ public sealed class PgDataReader : DbDataReader
 
             switch (messageType)
             {
-                case 'D': // DataRow - 最も頻繁なケースを最初に
+                case 'D': // DataRow
                     ParseDataRow(buffer.AsSpan(payloadOffset, payloadLength), payloadOffset);
                     pos += payloadLength;
                     if (!firstRowRead)
@@ -296,62 +383,6 @@ public sealed class PgDataReader : DbDataReader
         }
     }
 
-    public override bool NextResult()
-    {
-        return false;
-    }
-
-    public override Task<bool> NextResultAsync(CancellationToken cancellationToken)
-    {
-        return Task.FromResult(false);
-    }
-
-    public override void Close()
-    {
-        CloseAsync().GetAwaiter().GetResult();
-    }
-
-    public override async Task CloseAsync()
-    {
-        if (isClosed)
-        {
-            return;
-        }
-        isClosed = true;
-
-        // If not completed, drain messages until ReadyForQuery
-        if (!completed)
-        {
-            await DrainToReadyForQueryAsync().ConfigureAwait(false);
-        }
-
-        // Return buffers to pool
-        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
-        if (columns is not null)
-        {
-            ArrayPool<PgColumnInfo>.Shared.Return(columns);
-            columns = null!;
-        }
-        if (offsets is not null)
-        {
-            ArrayPool<int>.Shared.Return(offsets);
-            offsets = null!;
-        }
-        if (lengths is not null)
-        {
-            ArrayPool<int>.Shared.Return(lengths);
-            lengths = null!;
-        }
-        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
-
-        rowBuffer = null!;
-
-        if ((behavior & CommandBehavior.CloseConnection) != 0)
-        {
-            await connection.CloseAsync().ConfigureAwait(false);
-        }
-    }
-
     /// <summary>
     /// Drain all messages until ReadyForQuery ('Z') message.
     /// </summary>
@@ -384,6 +415,26 @@ public sealed class PgDataReader : DbDataReader
         }
     }
 
+    private static string ParseErrorMessage(ReadOnlySpan<byte> payload)
+    {
+        var offset = 0;
+        while (offset < payload.Length && payload[offset] != 0)
+        {
+            var fieldType = (char)payload[offset++];
+            var end = payload[offset..].IndexOf((byte)0);
+            if (fieldType == 'M')
+            {
+                return Encoding.UTF8.GetString(payload.Slice(offset, end));
+            }
+            offset += end + 1;
+        }
+        return "Unknown error";
+    }
+
+    //--------------------------------------------------------------------------------
+    // Helpers
+    //--------------------------------------------------------------------------------
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ReadOnlySpan<byte> GetValueSpan(int ordinal)
     {
@@ -398,12 +449,93 @@ public sealed class PgDataReader : DbDataReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsBinaryFormat(int ordinal) => columns[ordinal].FormatCode == FormatBinary;
 
+    //--------------------------------------------------------------------------------
+    // Field metadata
+    //--------------------------------------------------------------------------------
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override bool IsDBNull(int ordinal) => lengths[ordinal] == -1;
 
     public override Task<bool> IsDBNullAsync(int ordinal, CancellationToken cancellationToken)
     {
         return Task.FromResult(IsDBNull(ordinal));
+    }
+
+    public override string GetDataTypeName(int ordinal)
+    {
+        var typeOid = columns[ordinal].TypeOid;
+        return OidToTypeNameMap.GetValueOrDefault(typeOid, "unknown");
+    }
+
+    public override Type GetFieldType(int ordinal)
+    {
+        var typeOid = columns[ordinal].TypeOid;
+        return OidToTypeMap.TryGetValue(typeOid, out var type) ? type : typeof(object);
+    }
+
+    public override string GetName(int ordinal)
+    {
+        return columns[ordinal].Name;
+    }
+
+    public override int GetOrdinal(string name)
+    {
+        var cols = columns;
+        for (var i = 0; i < fieldCount; i++)
+        {
+            if (cols[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+#pragma warning disable CA2201
+        throw new IndexOutOfRangeException($"Column '{name}' not found");
+#pragma warning restore CA2201
+    }
+
+    //--------------------------------------------------------------------------------
+    // Get values
+    //--------------------------------------------------------------------------------
+
+    public override object GetValue(int ordinal)
+    {
+        if (IsDBNull(ordinal))
+        {
+            return DBNull.Value;
+        }
+
+        var typeOid = columns[ordinal].TypeOid;
+        return typeOid switch
+        {
+            OidBool => GetBoolean(ordinal),
+            OidInt2 => GetInt16(ordinal),
+            OidInt4 or OidOid => GetInt32(ordinal),
+            OidInt8 => GetInt64(ordinal),
+            OidFloat4 => GetFloat(ordinal),
+            OidFloat8 => GetDouble(ordinal),
+            OidNumeric => GetDecimal(ordinal),
+            OidText or OidVarchar or OidChar => GetString(ordinal),
+            OidBytea => GetBytea(ordinal),
+            OidDate or OidTimestamp or OidTimestampTz => GetDateTime(ordinal),
+            OidUuid => GetGuid(ordinal),
+            _ => GetString(ordinal) // Fallback to string for unknown types
+        };
+    }
+
+    private byte[] GetBytea(int ordinal)
+    {
+        var span = GetValueSpan(ordinal);
+        return span.ToArray();
+    }
+
+    public override int GetValues(object[] values)
+    {
+        var count = Math.Min(values.Length, fieldCount);
+        for (var i = 0; i < count; i++)
+        {
+            values[i] = GetValue(i);
+        }
+        return count;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -566,111 +698,11 @@ public sealed class PgDataReader : DbDataReader
         return value;
     }
 
-    public override string GetName(int ordinal)
-    {
-        return columns[ordinal].Name;
-    }
-
-    public override int GetOrdinal(string name)
-    {
-        var cols = columns;
-        for (var i = 0; i < fieldCount; i++)
-        {
-            if (cols[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            {
-                return i;
-            }
-        }
-#pragma warning disable CA2201
-        throw new IndexOutOfRangeException($"Column '{name}' not found");
-#pragma warning restore CA2201
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override string GetString(int ordinal)
     {
         var span = GetValueSpan(ordinal);
         return Encoding.UTF8.GetString(span);
-    }
-
-    public override object GetValue(int ordinal)
-    {
-        if (IsDBNull(ordinal))
-        {
-            return DBNull.Value;
-        }
-
-        var typeOid = columns[ordinal].TypeOid;
-        return typeOid switch
-        {
-            OidBool => GetBoolean(ordinal),
-            OidInt2 => GetInt16(ordinal),
-            OidInt4 or OidOid => GetInt32(ordinal),
-            OidInt8 => GetInt64(ordinal),
-            OidFloat4 => GetFloat(ordinal),
-            OidFloat8 => GetDouble(ordinal),
-            OidNumeric => GetDecimal(ordinal),
-            OidText or OidVarchar or OidChar => GetString(ordinal),
-            OidBytea => GetBytea(ordinal),
-            OidDate or OidTimestamp or OidTimestampTz => GetDateTime(ordinal),
-            OidUuid => GetGuid(ordinal),
-            _ => GetString(ordinal) // Fallback to string for unknown types
-        };
-    }
-
-    public override int GetValues(object[] values)
-    {
-        var count = Math.Min(values.Length, fieldCount);
-        for (var i = 0; i < count; i++)
-        {
-            values[i] = GetValue(i);
-        }
-        return count;
-    }
-
-    private byte[] GetBytea(int ordinal)
-    {
-        var span = GetValueSpan(ordinal);
-        return span.ToArray();
-    }
-
-    public override string GetDataTypeName(int ordinal)
-    {
-        var typeOid = columns[ordinal].TypeOid;
-        return OidToTypeNameMap.GetValueOrDefault(typeOid, "unknown");
-    }
-
-    public override Type GetFieldType(int ordinal)
-    {
-        var typeOid = columns[ordinal].TypeOid;
-        return OidToTypeMap.TryGetValue(typeOid, out var type) ? type : typeof(object);
-    }
-
-    public override IEnumerator GetEnumerator()
-    {
-        return new DbEnumerator(this, closeReader: false);
-    }
-
-    public override async ValueTask DisposeAsync()
-    {
-        await CloseAsync().ConfigureAwait(false);
-        await base.DisposeAsync().ConfigureAwait(false);
-    }
-
-    private static string ParseErrorMessage(ReadOnlySpan<byte> payload)
-    {
-        var offset = 0;
-        while (offset < payload.Length && payload[offset] != 0)
-        {
-            var fieldType = (char)payload[offset++];
-            var end = payload[offset..].IndexOf((byte)0);
-            if (fieldType == 'M')
-            {
-                return Encoding.UTF8.GetString(payload.Slice(offset, end));
-            }
-            offset += end + 1;
-        }
-        return "Unknown error";
     }
 }
 #pragma warning restore CA1010

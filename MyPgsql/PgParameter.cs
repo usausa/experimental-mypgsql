@@ -6,6 +6,10 @@ using System.Diagnostics.CodeAnalysis;
 
 public sealed class PgParameter : DbParameter
 {
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
     public override DbType DbType { get; set; } = DbType.String;
 
     public override ParameterDirection Direction { get; set; } = ParameterDirection.Input;
@@ -24,6 +28,10 @@ public sealed class PgParameter : DbParameter
 
     public override object? Value { get; set; }
 
+    //--------------------------------------------------------------------------------
+    // Constructors
+    //--------------------------------------------------------------------------------
+
     public PgParameter()
     {
     }
@@ -39,6 +47,10 @@ public sealed class PgParameter : DbParameter
         ParameterName = parameterName;
         Value = value;
     }
+
+    //--------------------------------------------------------------------------------
+    // Overrides
+    //--------------------------------------------------------------------------------
 
     public override void ResetDbType()
     {

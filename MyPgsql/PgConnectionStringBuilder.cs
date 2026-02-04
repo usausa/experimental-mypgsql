@@ -4,6 +4,10 @@ using System.Globalization;
 
 public sealed class PgConnectionStringBuilder
 {
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
     public string Host { get; set; } = "localhost";
 
     public int Port { get; set; } = 5432;
@@ -14,6 +18,10 @@ public sealed class PgConnectionStringBuilder
 
     public string Password { get; set; } = string.Empty;
 
+    //--------------------------------------------------------------------------------
+    // Constructors
+    //--------------------------------------------------------------------------------
+
     public PgConnectionStringBuilder()
     {
     }
@@ -22,6 +30,10 @@ public sealed class PgConnectionStringBuilder
     {
         Parse(connectionString);
     }
+
+    //--------------------------------------------------------------------------------
+    // Helpers
+    //--------------------------------------------------------------------------------
 
     private void Parse(string connectionString)
     {
@@ -58,6 +70,10 @@ public sealed class PgConnectionStringBuilder
             }
         }
     }
+
+    //--------------------------------------------------------------------------------
+    // Overrides
+    //--------------------------------------------------------------------------------
 
     public override string ToString()
     {

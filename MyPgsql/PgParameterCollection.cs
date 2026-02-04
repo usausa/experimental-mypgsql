@@ -8,9 +8,17 @@ public sealed class PgParameterCollection : DbParameterCollection
 {
     private readonly List<PgParameter> parameters = [];
 
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
     public override object SyncRoot { get; } = new();
 
     public override int Count => parameters.Count;
+
+    //--------------------------------------------------------------------------------
+    // Collection methods
+    //--------------------------------------------------------------------------------
 
     public override int Add(object value)
     {
@@ -91,6 +99,10 @@ public sealed class PgParameterCollection : DbParameterCollection
         }
     }
 
+    //--------------------------------------------------------------------------------
+    // Parameter accessors
+    //--------------------------------------------------------------------------------
+
     protected override DbParameter GetParameter(int index)
     {
         return parameters[index];
@@ -118,6 +130,10 @@ public sealed class PgParameterCollection : DbParameterCollection
             parameters.Add((PgParameter)value);
         }
     }
+
+    //--------------------------------------------------------------------------------
+    // Internal Methods
+    //--------------------------------------------------------------------------------
 
     internal IReadOnlyList<PgParameter> GetParametersInternal() => parameters;
 }

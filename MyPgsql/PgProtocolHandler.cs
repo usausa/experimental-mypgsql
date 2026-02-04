@@ -21,17 +21,25 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private string user = string.Empty;
     private string password = string.Empty;
 
-    private byte[] writeBuffer = null!;
-    private byte[] readBuffer = null!;
-    private byte[] streamBuffer = null!;
+    private byte[] writeBuffer = default!;
+    private byte[] readBuffer = default!;
+    private byte[] streamBuffer = default!;
     private int streamBufferPos;
     private int streamBufferLen;
+
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
 
     internal byte[] StreamBuffer => streamBuffer;
 
     internal ref int StreamBufferPos => ref streamBufferPos;
 
     internal int StreamBufferLen => streamBufferLen;
+
+    //--------------------------------------------------------------------------------
+    // Dispose
+    //--------------------------------------------------------------------------------
 
     public void Dispose()
     {
@@ -65,22 +73,26 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         if (readBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(readBuffer);
-            readBuffer = null!;
+            readBuffer = default!;
         }
 
         if (writeBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(writeBuffer);
-            writeBuffer = null!;
+            writeBuffer = default!;
         }
 
         if (streamBuffer is not null)
         {
             ArrayPool<byte>.Shared.Return(streamBuffer);
-            streamBuffer = null!;
+            streamBuffer = default!;
         }
         // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
     }
+
+    //--------------------------------------------------------------------------------
+    // Connection methods
+    //--------------------------------------------------------------------------------
 
     // ReSharper disable ParameterHidesMember
     public async Task ConnectAsync(string host, int port, string database, string user, string password, CancellationToken cancellationToken)
@@ -105,6 +117,265 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         await HandleAuthenticationAsync(cancellationToken).ConfigureAwait(false);
     }
     // ReSharper restore ParameterHidesMember
+
+    // ReSharper disable once ParameterHidesMember
+    private async ValueTask SendStartupMessageAsync(string database, string user, CancellationToken cancellationToken)
+    {
+        var buffer = writeBuffer;
+        var offset = 4;
+
+        BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), 196608);
+        offset += 4;
+
+        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "user");
+        offset += WriteNullTerminatedString(buffer.AsSpan(offset), user);
+        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "database");
+        offset += WriteNullTerminatedString(buffer.AsSpan(offset), database);
+        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "client_encoding");
+        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "UTF8");
+        buffer[offset++] = 0;
+
+        BinaryPrimitives.WriteInt32BigEndian(buffer, offset);
+
+        await socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask HandleAuthenticationAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var (messageType, payload, payloadLength) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
+
+            switch (messageType)
+            {
+                case 'R':
+                    await HandleAuthResponseAsync(payload, cancellationToken).ConfigureAwait(false);
+                    ReturnBuffer(payload);
+                    break;
+
+                case 'K':
+                case 'S':
+                    ReturnBuffer(payload);
+                    break;
+
+                case 'Z':
+                    ReturnBuffer(payload);
+                    return;
+
+                case 'E':
+                    var error = ParseErrorMessage(payload.AsSpan(0, payloadLength));
+                    ReturnBuffer(payload);
+                    throw new PgException($"Authentication error: {error}");
+
+                default:
+                    ReturnBuffer(payload);
+                    break;
+            }
+        }
+    }
+
+    private ValueTask HandleAuthResponseAsync(byte[] payload, CancellationToken cancellationToken)
+    {
+        var authType = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan());
+
+        switch (authType)
+        {
+            case 0: // AuthenticationOk
+                break;
+
+            case 3: // AuthenticationCleartextPassword
+                return SendPasswordMessageAsync(password, cancellationToken);
+
+            case 5: // AuthenticationMD5Password
+                var salt = payload.AsSpan(4, 4).ToArray();
+                ComputeMd5Password(salt, out var md5Password);
+                return SendPasswordMessageAsync(md5Password, cancellationToken);
+
+            case 10: // AuthenticationSASL
+                return HandleSaslAuthAsync(cancellationToken);
+
+            default:
+                throw new PgException($"Unsupported authentication method: {authType}");
+        }
+        return ValueTask.CompletedTask;
+    }
+
+    // ReSharper disable once ParameterHidesMember
+    private async ValueTask SendPasswordMessageAsync(string password, CancellationToken cancellationToken)
+    {
+        var passwordByteCount = Encoding.UTF8.GetByteCount(password) + 1;
+        var totalLength = 1 + 4 + passwordByteCount;
+
+        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
+        try
+        {
+            buffer[0] = (byte)'p';
+            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(1), 4 + passwordByteCount);
+            Encoding.UTF8.GetBytes(password, buffer.AsSpan(5));
+            buffer[totalLength - 1] = 0;
+
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+#pragma warning disable CA5351
+    private void ComputeMd5Password(ReadOnlySpan<byte> salt, out string result)
+    {
+        Span<byte> innerHash = stackalloc byte[16];
+        Span<byte> outerHash = stackalloc byte[16];
+
+        var innerInput = Encoding.UTF8.GetBytes(password + user);
+        MD5.HashData(innerInput, innerHash);
+
+        Span<byte> innerHex = stackalloc byte[32];
+        HexEncode(innerHash, innerHex);
+
+        Span<byte> outerInput = stackalloc byte[36];
+        innerHex.CopyTo(outerInput);
+        salt.CopyTo(outerInput[32..]);
+        MD5.HashData(outerInput, outerHash);
+
+        Span<byte> outerHex = stackalloc byte[32];
+        HexEncode(outerHash, outerHex);
+
+        Span<char> passwordChars = stackalloc char[35];
+        "md5".CopyTo(passwordChars);
+        Encoding.ASCII.GetChars(outerHex, passwordChars[3..]);
+
+        result = new string(passwordChars);
+    }
+#pragma warning restore CA5351
+
+    private async ValueTask HandleSaslAuthAsync(CancellationToken cancellationToken)
+    {
+        var clientNonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(18));
+        var clientFirstBare = $"n=,r={clientNonce}";
+        var clientFirstMessage = $"n,,{clientFirstBare}";
+
+        await SendSaslInitialResponseAsync(clientFirstMessage, cancellationToken).ConfigureAwait(false);
+
+        var (msgType1, serverFirstPayload, serverFirstLength) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
+        if (msgType1 == 'E')
+        {
+            var error = ParseErrorMessage(serverFirstPayload.AsSpan(0, serverFirstLength));
+            ReturnBuffer(serverFirstPayload);
+            throw new PgException($"SASL authentication error: {error}");
+        }
+
+        var serverFirstStr = Encoding.UTF8.GetString(serverFirstPayload.AsSpan(0, serverFirstLength));
+        ReturnBuffer(serverFirstPayload);
+
+        var serverParams = ParseScramParams(serverFirstStr);
+        var serverNonce = serverParams["r"];
+        var salt = Convert.FromBase64String(serverParams["s"]);
+        var iterations = Int32.Parse(serverParams["i"], CultureInfo.InvariantCulture);
+
+        var clientFinalWithoutProof = $"c=biws,r={serverNonce}";
+        var clientFinalMessage = ComputeScramClientFinal(clientFirstBare, serverFirstStr, clientFinalWithoutProof, salt, iterations);
+        await SendSaslResponseAsync(clientFinalMessage, cancellationToken).ConfigureAwait(false);
+
+        var (msgType2, serverFinalPayload, _) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
+        ReturnBuffer(serverFinalPayload);
+        if (msgType2 == 'E')
+        {
+            throw new PgException("SCRAM authentication failed");
+        }
+    }
+
+    private static Dictionary<string, string> ParseScramParams(string message)
+    {
+        var result = new Dictionary<string, string>(3);
+        foreach (var part in message.Split(','))
+        {
+            var idx = part.IndexOf('=', StringComparison.Ordinal);
+            if (idx > 0)
+            {
+                result[part[..idx]] = part[(idx + 1)..];
+            }
+        }
+        return result;
+    }
+
+    private string ComputeScramClientFinal(string clientFirstBare, string serverFirstStr, string clientFinalWithoutProof, byte[] salt, int iterations)
+    {
+        Span<byte> saltedPassword = stackalloc byte[32];
+        Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, saltedPassword, iterations, HashAlgorithmName.SHA256);
+
+        Span<byte> clientKey = stackalloc byte[32];
+        HMACSHA256.HashData(saltedPassword, "Client Key"u8, clientKey);
+
+        Span<byte> storedKey = stackalloc byte[32];
+        SHA256.HashData(clientKey, storedKey);
+
+        var authMessage = $"{clientFirstBare},{serverFirstStr},{clientFinalWithoutProof}";
+
+        Span<byte> clientSignature = stackalloc byte[32];
+        HMACSHA256.HashData(storedKey, Encoding.UTF8.GetBytes(authMessage), clientSignature);
+
+        Span<byte> clientProof = stackalloc byte[32];
+        for (var i = 0; i < 32; i++)
+        {
+            clientProof[i] = (byte)(clientKey[i] ^ clientSignature[i]);
+        }
+
+        return $"{clientFinalWithoutProof},p={Convert.ToBase64String(clientProof)}";
+    }
+
+    private async ValueTask SendSaslInitialResponseAsync(string clientFirstMessage, CancellationToken cancellationToken)
+    {
+        var mechanism = "SCRAM-SHA-256"u8;
+        var clientFirstBytes = Encoding.UTF8.GetBytes(clientFirstMessage);
+        var totalLength = 1 + 4 + mechanism.Length + 1 + 4 + clientFirstBytes.Length;
+
+        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
+        try
+        {
+            var offset = 0;
+            buffer[offset++] = (byte)'p';
+            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), totalLength - 1);
+            offset += 4;
+            mechanism.CopyTo(buffer.AsSpan(offset));
+            offset += mechanism.Length;
+            buffer[offset++] = 0;
+            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), clientFirstBytes.Length);
+            offset += 4;
+            clientFirstBytes.CopyTo(buffer.AsSpan(offset));
+
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private async ValueTask SendSaslResponseAsync(string response, CancellationToken cancellationToken)
+    {
+        var responseBytes = Encoding.UTF8.GetBytes(response);
+        var totalLength = 1 + 4 + responseBytes.Length;
+
+        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
+        try
+        {
+            buffer[0] = (byte)'p';
+            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(1), 4 + responseBytes.Length);
+            responseBytes.CopyTo(buffer.AsSpan(5));
+
+            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    //--------------------------------------------------------------------------------
+    // Parameterized query methods
+    //--------------------------------------------------------------------------------
 
     [GeneratedRegex(@"@\w+", RegexOptions.Compiled)]
     private static partial Regex ParameterNameRegex();
@@ -221,6 +492,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
                 }
         }
     }
+
+    //--------------------------------------------------------------------------------
+    // Send methods
+    //--------------------------------------------------------------------------------
 
     public async ValueTask SendExtendedQueryWithParametersAsync(string sql, IEnumerable<PgParameter> parameters, CancellationToken cancellationToken)
     {
@@ -483,6 +758,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
+    //--------------------------------------------------------------------------------
+    // Extended query
+    //--------------------------------------------------------------------------------
+
     public async Task<int> ExecuteSimpleQueryAsync(string sql, CancellationToken cancellationToken)
     {
         await SendSimpleQueryAsync(sql, cancellationToken).ConfigureAwait(false);
@@ -639,246 +918,9 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         }
     }
 
-    // ReSharper disable once ParameterHidesMember
-    private async ValueTask SendStartupMessageAsync(string database, string user, CancellationToken cancellationToken)
-    {
-        var buffer = writeBuffer;
-        var offset = 4;
-
-        BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), 196608);
-        offset += 4;
-
-        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "user");
-        offset += WriteNullTerminatedString(buffer.AsSpan(offset), user);
-        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "database");
-        offset += WriteNullTerminatedString(buffer.AsSpan(offset), database);
-        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "client_encoding");
-        offset += WriteNullTerminatedString(buffer.AsSpan(offset), "UTF8");
-        buffer[offset++] = 0;
-
-        BinaryPrimitives.WriteInt32BigEndian(buffer, offset);
-
-        await socket!.SendAsync(buffer.AsMemory(0, offset), cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask HandleAuthenticationAsync(CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            var (messageType, payload, payloadLength) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
-
-            switch (messageType)
-            {
-                case 'R':
-                    await HandleAuthResponseAsync(payload, cancellationToken).ConfigureAwait(false);
-                    ReturnBuffer(payload);
-                    break;
-
-                case 'K':
-                case 'S':
-                    ReturnBuffer(payload);
-                    break;
-
-                case 'Z':
-                    ReturnBuffer(payload);
-                    return;
-
-                case 'E':
-                    var error = ParseErrorMessage(payload.AsSpan(0, payloadLength));
-                    ReturnBuffer(payload);
-                    throw new PgException($"Authentication error: {error}");
-
-                default:
-                    ReturnBuffer(payload);
-                    break;
-            }
-        }
-    }
-
-    private ValueTask HandleAuthResponseAsync(byte[] payload, CancellationToken cancellationToken)
-    {
-        var authType = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan());
-
-        switch (authType)
-        {
-            case 0: // AuthenticationOk
-                break;
-
-            case 3: // AuthenticationCleartextPassword
-                return SendPasswordMessageAsync(password, cancellationToken);
-
-            case 5: // AuthenticationMD5Password
-                var salt = payload.AsSpan(4, 4).ToArray();
-                ComputeMd5Password(salt, out var md5Password);
-                return SendPasswordMessageAsync(md5Password, cancellationToken);
-
-            case 10: // AuthenticationSASL
-                return HandleSaslAuthAsync(cancellationToken);
-
-            default:
-                throw new PgException($"Unsupported authentication method: {authType}");
-        }
-        return ValueTask.CompletedTask;
-    }
-
-    // ReSharper disable once ParameterHidesMember
-    private async ValueTask SendPasswordMessageAsync(string password, CancellationToken cancellationToken)
-    {
-        var passwordByteCount = Encoding.UTF8.GetByteCount(password) + 1;
-        var totalLength = 1 + 4 + passwordByteCount;
-
-        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
-        try
-        {
-            buffer[0] = (byte)'p';
-            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(1), 4 + passwordByteCount);
-            Encoding.UTF8.GetBytes(password, buffer.AsSpan(5));
-            buffer[totalLength - 1] = 0;
-
-            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
-
-#pragma warning disable CA5351
-    private void ComputeMd5Password(ReadOnlySpan<byte> salt, out string result)
-    {
-        Span<byte> innerHash = stackalloc byte[16];
-        Span<byte> outerHash = stackalloc byte[16];
-
-        var innerInput = Encoding.UTF8.GetBytes(password + user);
-        MD5.HashData(innerInput, innerHash);
-
-        Span<byte> innerHex = stackalloc byte[32];
-        HexEncode(innerHash, innerHex);
-
-        Span<byte> outerInput = stackalloc byte[36];
-        innerHex.CopyTo(outerInput);
-        salt.CopyTo(outerInput[32..]);
-        MD5.HashData(outerInput, outerHash);
-
-        Span<byte> outerHex = stackalloc byte[32];
-        HexEncode(outerHash, outerHex);
-
-        Span<char> passwordChars = stackalloc char[35];
-        "md5".CopyTo(passwordChars);
-        Encoding.ASCII.GetChars(outerHex, passwordChars[3..]);
-
-        result = new string(passwordChars);
-    }
-#pragma warning restore CA5351
-
-    private async ValueTask HandleSaslAuthAsync(CancellationToken cancellationToken)
-    {
-        var clientNonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(18));
-        var clientFirstBare = $"n=,r={clientNonce}";
-        var clientFirstMessage = $"n,,{clientFirstBare}";
-
-        await SendSaslInitialResponseAsync(clientFirstMessage, cancellationToken).ConfigureAwait(false);
-
-        var (msgType1, serverFirstPayload, serverFirstLength) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
-        if (msgType1 == 'E')
-        {
-            var error = ParseErrorMessage(serverFirstPayload.AsSpan(0, serverFirstLength));
-            ReturnBuffer(serverFirstPayload);
-            throw new PgException($"SASL authentication error: {error}");
-        }
-
-        var serverFirstStr = Encoding.UTF8.GetString(serverFirstPayload.AsSpan(0, serverFirstLength));
-        ReturnBuffer(serverFirstPayload);
-
-        var serverParams = ParseScramParams(serverFirstStr);
-        var serverNonce = serverParams["r"];
-        var salt = Convert.FromBase64String(serverParams["s"]);
-        var iterations = Int32.Parse(serverParams["i"], CultureInfo.InvariantCulture);
-
-        var clientFinalWithoutProof = $"c=biws,r={serverNonce}";
-        var clientFinalMessage = ComputeScramClientFinal(clientFirstBare, serverFirstStr, clientFinalWithoutProof, salt, iterations);
-        await SendSaslResponseAsync(clientFinalMessage, cancellationToken).ConfigureAwait(false);
-
-        var (msgType2, serverFinalPayload, _) = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
-        ReturnBuffer(serverFinalPayload);
-        if (msgType2 == 'E')
-        {
-            throw new PgException("SCRAM authentication failed");
-        }
-    }
-
-    private string ComputeScramClientFinal(string clientFirstBare, string serverFirstStr, string clientFinalWithoutProof, byte[] salt, int iterations)
-    {
-        Span<byte> saltedPassword = stackalloc byte[32];
-        Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, saltedPassword, iterations, HashAlgorithmName.SHA256);
-
-        Span<byte> clientKey = stackalloc byte[32];
-        HMACSHA256.HashData(saltedPassword, "Client Key"u8, clientKey);
-
-        Span<byte> storedKey = stackalloc byte[32];
-        SHA256.HashData(clientKey, storedKey);
-
-        var authMessage = $"{clientFirstBare},{serverFirstStr},{clientFinalWithoutProof}";
-
-        Span<byte> clientSignature = stackalloc byte[32];
-        HMACSHA256.HashData(storedKey, Encoding.UTF8.GetBytes(authMessage), clientSignature);
-
-        Span<byte> clientProof = stackalloc byte[32];
-        for (var i = 0; i < 32; i++)
-        {
-            clientProof[i] = (byte)(clientKey[i] ^ clientSignature[i]);
-        }
-
-        return $"{clientFinalWithoutProof},p={Convert.ToBase64String(clientProof)}";
-    }
-
-    private async ValueTask SendSaslInitialResponseAsync(string clientFirstMessage, CancellationToken cancellationToken)
-    {
-        var mechanism = "SCRAM-SHA-256"u8;
-        var clientFirstBytes = Encoding.UTF8.GetBytes(clientFirstMessage);
-        var totalLength = 1 + 4 + mechanism.Length + 1 + 4 + clientFirstBytes.Length;
-
-        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
-        try
-        {
-            var offset = 0;
-            buffer[offset++] = (byte)'p';
-            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), totalLength - 1);
-            offset += 4;
-            mechanism.CopyTo(buffer.AsSpan(offset));
-            offset += mechanism.Length;
-            buffer[offset++] = 0;
-            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(offset), clientFirstBytes.Length);
-            offset += 4;
-            clientFirstBytes.CopyTo(buffer.AsSpan(offset));
-
-            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
-
-    private async ValueTask SendSaslResponseAsync(string response, CancellationToken cancellationToken)
-    {
-        var responseBytes = Encoding.UTF8.GetBytes(response);
-        var totalLength = 1 + 4 + responseBytes.Length;
-
-        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
-        try
-        {
-            buffer[0] = (byte)'p';
-            BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(1), 4 + responseBytes.Length);
-            responseBytes.CopyTo(buffer.AsSpan(5));
-
-            await socket!.SendAsync(buffer.AsMemory(0, totalLength), cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
+    //--------------------------------------------------------------------------------
+    // Read
+    //--------------------------------------------------------------------------------
 
     private async Task<(char Type, byte[] Payload, int Length)> ReadMessageAsync(CancellationToken cancellationToken)
     {
@@ -911,6 +953,10 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             offset += read;
         }
     }
+
+    //--------------------------------------------------------------------------------
+    // Helpers
+    //--------------------------------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ReturnBuffer(byte[] buffer)
@@ -966,19 +1012,5 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
             offset += end + 1;
         }
         return "Unknown error";
-    }
-
-    private static Dictionary<string, string> ParseScramParams(string message)
-    {
-        var result = new Dictionary<string, string>(3);
-        foreach (var part in message.Split(','))
-        {
-            var idx = part.IndexOf('=', StringComparison.Ordinal);
-            if (idx > 0)
-            {
-                result[part[..idx]] = part[(idx + 1)..];
-            }
-        }
-        return result;
     }
 }

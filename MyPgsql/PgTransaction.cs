@@ -7,11 +7,19 @@ public sealed class PgTransaction : DbTransaction
 {
     private bool completed;
 
+    //--------------------------------------------------------------------------------
+    // Properties
+    //--------------------------------------------------------------------------------
+
     public new PgConnection Connection { get; }
 
     protected override DbConnection DbConnection => Connection;
 
     public override IsolationLevel IsolationLevel { get; }
+
+    //--------------------------------------------------------------------------------
+    // Constructor
+    //--------------------------------------------------------------------------------
 
     internal PgTransaction(PgConnection connection, IsolationLevel isolationLevel)
     {
@@ -36,6 +44,10 @@ public sealed class PgTransaction : DbTransaction
         }
         base.Dispose(disposing);
     }
+
+    //--------------------------------------------------------------------------------
+    // Transaction methods
+    //--------------------------------------------------------------------------------
 
     public override void Commit()
     {
