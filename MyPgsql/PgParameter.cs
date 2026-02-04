@@ -71,7 +71,6 @@ public sealed class PgParameter : DbParameter
             DateOnly => DbType.Date,
             Guid => DbType.Guid,
             byte[] => DbType.Binary,
-            string => DbType.String,
             _ => DbType.String
         };
     }
