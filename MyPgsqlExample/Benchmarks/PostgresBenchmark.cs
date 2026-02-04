@@ -6,7 +6,7 @@ using Npgsql;
 
 using MyPgsql;
 
-[MemoryDiagnoser]
+[Config(typeof(BenchmarkConfig))]
 #pragma warning disable CA1001
 #pragma warning disable CA1707
 #pragma warning disable CA1849
