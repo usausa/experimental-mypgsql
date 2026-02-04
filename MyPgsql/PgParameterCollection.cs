@@ -1,6 +1,7 @@
 namespace MyPgsql;
 
 using System.Collections;
+using System.Data;
 using System.Data.Common;
 
 #pragma warning disable CA1010
@@ -130,6 +131,37 @@ public sealed class PgParameterCollection : DbParameterCollection
             parameters.Add((PgParameter)value);
         }
     }
+
+    //--------------------------------------------------------------------------------
+    // Helpers
+    //--------------------------------------------------------------------------------
+
+    public PgParameter AddWithValue(string parameterName, object value)
+        => Add(new PgParameter(parameterName, value));
+
+    public PgParameter AddWithValue(string parameterName, DbType parameterType, object value)
+        => Add(new PgParameter(parameterName, parameterType) { Value = value });
+
+    public PgParameter AddWithValue(string parameterName, DbType parameterType, int size, object value)
+        => Add(new PgParameter(parameterName, parameterType) { Value = value, Size = size });
+
+    public PgParameter AddWithValue(string parameterName, DbType parameterType, int size, string? sourceColumn, object value)
+        => Add(new PgParameter(parameterName, parameterType) { Value = value, Size = size, SourceColumn = sourceColumn });
+
+    public PgParameter AddWithValue(object value)
+        => Add(new PgParameter { Value = value });
+
+    public PgParameter AddWithValue(DbType parameterType, object value)
+        => Add(new PgParameter { DbType = parameterType, Value = value });
+
+    public PgParameter Add(string parameterName, DbType parameterType)
+        => Add(new PgParameter(parameterName, parameterType));
+
+    public PgParameter Add(string parameterName, DbType parameterType, int size)
+        => Add(new PgParameter(parameterName, parameterType) { Size = size });
+
+    public PgParameter Add(string parameterName, DbType parameterType, int size, string sourceColumn)
+        => Add(new PgParameter(parameterName, parameterType) { Size = size, SourceColumn = sourceColumn });
 
     //--------------------------------------------------------------------------------
     // Internal Methods
