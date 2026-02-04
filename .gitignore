@@ -420,3 +420,4 @@ FodyWeavers.xsd
 # Customize
 desktop.ini
 __*
+/MyPgsqlExample/Properties/launchSettings.json

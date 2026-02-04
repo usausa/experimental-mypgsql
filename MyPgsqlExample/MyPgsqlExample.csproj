@@ -7,6 +7,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="Mofucat.DataBridge" Version="1.5.0" />
+    <PackageReference Include="Npgsql" Version="10.0.1" />
+    <PackageReference Include="NpgsqlBulkHelper" Version="1.4.0" />
+    <PackageReference Include="System.CommandLine" Version="2.0.2" />
+    <PackageReference Include="Usa.Smart.CommandLine.Hosting" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\MyPgsql\MyPgsql.csproj" />
   </ItemGroup>
 

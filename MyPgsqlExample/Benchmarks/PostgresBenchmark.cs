@@ -1,39 +1,34 @@
-namespace MyPgsqlBenchmark;
+namespace MyPgsqlExample.Benchmarks;
 
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Running;
-
-using MyPgsql;
 
 using Npgsql;
 
-internal static class Program
-{
-    public static void Main()
-    {
-        BenchmarkRunner.Run<PostgresBenchmarks>();
-    }
-}
+using MyPgsql;
 
+// TODO
 [MemoryDiagnoser]
 #pragma warning disable CA1001
 #pragma warning disable CA1707
 #pragma warning disable CA1849
-public class PostgresBenchmarks
+public class PostgresBenchmark
 {
-    private const string ConnectionString = "Host=mysql-server;Port=5432;Database=test;Username=test;Password=test";
+    public const string ConnectionStringVariable = "BENCH_CONNECTION_STRING";
 
-    private NpgsqlConnection npgsqlConnection = null!;
-    private PgConnection myPgsqlConnection = null!;
+    private NpgsqlConnection npgsqlConnection = default!;
+    private PgConnection myPgsqlConnection = default!;
     //private int insertId;
 
     [GlobalSetup]
     public async Task Setup()
     {
-        npgsqlConnection = new NpgsqlConnection(ConnectionString);
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionStringVariable) ??
+                           throw new InvalidOperationException("Environment variable is not set");
+
+        npgsqlConnection = new NpgsqlConnection(connectionString);
         await npgsqlConnection.OpenAsync();
 
-        myPgsqlConnection = new PgConnection(ConnectionString);
+        myPgsqlConnection = new PgConnection(connectionString);
         await myPgsqlConnection.OpenAsync();
 
         //insertId = 100000;
@@ -110,6 +105,3 @@ public class PostgresBenchmarks
     //    }
     //}
 }
-#pragma warning restore CA1849
-#pragma warning restore CA1707
-#pragma warning restore CA1001
