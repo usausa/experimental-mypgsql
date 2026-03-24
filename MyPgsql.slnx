@@ -3,13 +3,15 @@
     <File Path=".editorconfig" />
     <File Path=".gitattributes" />
     <File Path=".gitignore" />
+    <File Path="AGENTS.md" />
     <File Path="Analyzers.ruleset" />
+    <File Path="CLAUDE.md" />
     <File Path="Directory.Build.props" />
     <File Path="Directory.Build.targets" />
     <File Path="LICENSE" />
     <File Path="MyPgsql.sln.DotSettings" />
     <File Path="README.md" />
   </Folder>
-  <Project Path="MyPgsql/MyPgsql.csproj" Id="46025236-5801-4958-b509-ae7a4323c68a" />
-  <Project Path="MyPgsqlExample/MyPgsqlExample.csproj" Id="b097c1f2-87d3-4671-90d5-f7ebee05f8eb" />
+  <Project Path="MyPgsql/MyPgsql.csproj" />
+  <Project Path="MyPgsqlExample/MyPgsqlExample.csproj" />
 </Solution>
