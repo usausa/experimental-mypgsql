@@ -2,9 +2,9 @@ namespace MyPgsqlExample.Benchmarks;
 
 using BenchmarkDotNet.Attributes;
 
-using Npgsql;
-
 using MyPgsql;
+
+using Npgsql;
 
 [Config(typeof(BenchmarkConfig))]
 #pragma warning disable CA1001

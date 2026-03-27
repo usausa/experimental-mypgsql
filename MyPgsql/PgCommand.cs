@@ -38,7 +38,7 @@ public sealed class PgCommand : DbCommand
         set => Transaction = value as PgTransaction;
     }
 
-    public new PgParameterCollection Parameters { get; } = new();
+    public new PgParameterCollection Parameters { get; } = [];
 
     protected override DbParameterCollection DbParameterCollection => Parameters;
 

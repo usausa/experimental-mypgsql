@@ -16,9 +16,11 @@ public sealed class PgConnection : DbConnection
 
     private PgProtocolHandler? protocol;
 
+#pragma warning disable IDE0032
 #pragma warning disable CA2213
     private PgTransaction? currentTransaction;
 #pragma warning restore CA2213
+#pragma warning restore IDE0032
 
     //--------------------------------------------------------------------------------
     // Properties
