@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 
 using static MyPgsql.PgTypes;
 
+#pragma warning disable IDE0032
 internal sealed partial class PgProtocolHandler : IAsyncDisposable
 {
     private const int DefaultBufferSize = 8192;
@@ -21,13 +22,11 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private string user = string.Empty;
     private string password = string.Empty;
 
-#pragma warning disable IDE0032
     private byte[] writeBuffer = default!;
     private byte[] readBuffer = default!;
     private byte[] streamBuffer = default!;
     private int streamBufferPos;
     private int streamBufferLen;
-#pragma warning restore IDE0032
 
     //--------------------------------------------------------------------------------
     // Properties
@@ -1016,3 +1015,4 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         return "Unknown error";
     }
 }
+#pragma warning restore IDE0032

@@ -5,6 +5,7 @@ using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
+#pragma warning disable IDE0032
 public sealed class PgConnection : DbConnection
 {
     private PgConnectionStringBuilder connectionStringBuilder = new();
@@ -16,11 +17,9 @@ public sealed class PgConnection : DbConnection
 
     private PgProtocolHandler? protocol;
 
-#pragma warning disable IDE0032
 #pragma warning disable CA2213
     private PgTransaction? currentTransaction;
 #pragma warning restore CA2213
-#pragma warning restore IDE0032
 
     //--------------------------------------------------------------------------------
     // Properties
@@ -209,3 +208,4 @@ public sealed class PgConnection : DbConnection
         throw new NotSupportedException("ChangeDatabase is not supported.");
     }
 }
+#pragma warning restore IDE0032
