@@ -365,7 +365,7 @@ OpenCover/
 # Azure Stream Analytics local run output
 ASALocalRun/
 
-# MSBuild  and Structured Log
+# MSBuild Binary and Structured Log
 *.binlog
 MSBuild_Logs/
 
@@ -417,7 +417,7 @@ FodyWeavers.xsd
 *.msm
 *.msp
 
-# Customize
+# Custom
 desktop.ini
 __*
 /MyPgsqlExample/Properties/launchSettings.json
