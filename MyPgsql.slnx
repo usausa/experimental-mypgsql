@@ -13,5 +13,5 @@
     <File Path="README.md" />
   </Folder>
   <Project Path="MyPgsql/MyPgsql.csproj" />
-  <Project Path="MyPgsqlExample/MyPgsqlExample.csproj" />
+  <Project Path="MyPgsqlExample/MyPgsqlExample.csproj" DefaultStartup="true" />
 </Solution>
