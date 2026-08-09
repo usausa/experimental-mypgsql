@@ -67,6 +67,7 @@ public sealed class PgCommand : DbCommand
 
     public override void Cancel()
     {
+        throw new NotSupportedException("Cancel is not supported. Use CommandTimeout or a CancellationToken.");
     }
 
     public override int ExecuteNonQuery()
@@ -78,11 +79,11 @@ public sealed class PgCommand : DbCommand
     {
         ValidateCommand();
 
-        if (Parameters.Count == 0)
-        {
-            return Connection!.Protocol.ExecuteNonQueryAsync(CommandText, cancellationToken);
-        }
-        return Connection!.Protocol.ExecuteNonQueryWithParametersAsync(CommandText, Parameters.GetParametersInternal(), cancellationToken);
+        return ExecuteWithTimeoutAsync(
+            static (command, token) => command.Parameters.Count == 0
+                ? command.Connection!.Protocol.ExecuteNonQueryAsync(command.CommandText, token)
+                : command.Connection!.Protocol.ExecuteNonQueryWithParametersAsync(command.CommandText, command.Parameters.GetParametersInternal(), token),
+            cancellationToken);
     }
 
     public override object? ExecuteScalar()
@@ -113,16 +114,23 @@ public sealed class PgCommand : DbCommand
     {
         ValidateCommand();
 
-        if (Parameters.Count == 0)
-        {
-            await Connection!.Protocol.SendExtendedQueryAsync(CommandText, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await Connection!.Protocol.SendExtendedQueryWithParametersAsync(CommandText, Parameters.GetParametersInternal(), cancellationToken).ConfigureAwait(false);
-        }
+        await ExecuteWithTimeoutAsync(
+            static async (command, token) =>
+            {
+                if (command.Parameters.Count == 0)
+                {
+                    await command.Connection!.Protocol.SendExtendedQueryAsync(command.CommandText, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await command.Connection!.Protocol.SendExtendedQueryWithParametersAsync(command.CommandText, command.Parameters.GetParametersInternal(), token).ConfigureAwait(false);
+                }
 
-        return new PgDataReader(Connection!.Protocol, Connection, behavior, cancellationToken);
+                return true;
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return new PgDataReader(Connection!.Protocol, Connection, behavior, CommandTimeout, cancellationToken);
     }
 
     //--------------------------------------------------------------------------------
@@ -141,6 +149,27 @@ public sealed class PgCommand : DbCommand
     //--------------------------------------------------------------------------------
     // Helpers
     //--------------------------------------------------------------------------------
+
+    private async Task<T> ExecuteWithTimeoutAsync<T>(Func<PgCommand, CancellationToken, Task<T>> operation, CancellationToken cancellationToken)
+    {
+        var timeoutSeconds = CommandTimeout;
+        if (timeoutSeconds <= 0)
+        {
+            return await operation(this, cancellationToken).ConfigureAwait(false);
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            return await operation(this, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Connection!.Break();
+            throw new PgException($"Command timeout expired. timeout=[{timeoutSeconds}]");
+        }
+    }
 
     private void ValidateCommand()
     {

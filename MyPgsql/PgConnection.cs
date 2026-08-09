@@ -185,6 +185,14 @@ public sealed class PgConnection : DbConnection
         currentTransaction = null;
     }
 
+    internal void Break()
+    {
+        protocol?.Dispose();
+        protocol = null;
+        currentTransaction = null;
+        state = ConnectionState.Broken;
+    }
+
     //--------------------------------------------------------------------------------
     // Command creation methods
     //--------------------------------------------------------------------------------

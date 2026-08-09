@@ -7,6 +7,7 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 using static MyPgsql.PgTypes;
@@ -17,6 +18,7 @@ public sealed class PgDataReader : DbDataReader
     private readonly PgProtocolHandler protocol;
     private readonly PgConnection connection;
     private readonly CommandBehavior behavior;
+    private readonly int commandTimeout;
     private readonly CancellationToken cancellation;
 
     private PgColumnInfo[] columns = default!;
@@ -54,11 +56,12 @@ public sealed class PgDataReader : DbDataReader
     // Constructor
     //--------------------------------------------------------------------------------
 
-    internal PgDataReader(PgProtocolHandler protocol, PgConnection connection, CommandBehavior behavior, CancellationToken cancellation)
+    internal PgDataReader(PgProtocolHandler protocol, PgConnection connection, CommandBehavior behavior, int commandTimeout, CancellationToken cancellation)
     {
         this.protocol = protocol;
         this.connection = connection;
         this.behavior = behavior;
+        this.commandTimeout = commandTimeout;
         this.cancellation = cancellation;
     }
 
@@ -91,7 +94,7 @@ public sealed class PgDataReader : DbDataReader
         // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
         if (columns is not null)
         {
-            ArrayPool<PgColumnInfo>.Shared.Return(columns);
+            ArrayPool<PgColumnInfo>.Shared.Return(columns, clearArray: true);
             columns = default!;
         }
         if (offsets is not null)
@@ -166,8 +169,25 @@ public sealed class PgDataReader : DbDataReader
             return new ValueTask<bool>(result.Value);
         }
 
-        // Asynchronous path
-        return ReadAsyncCoreInternal(cancellationToken);
+        return commandTimeout > 0
+            ? ReadWithTimeoutAsync(cancellationToken)
+            : ReadAsyncCoreInternal(cancellationToken);
+    }
+
+    private async ValueTask<bool> ReadWithTimeoutAsync(CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(commandTimeout));
+        try
+        {
+            return await ReadAsyncCoreInternal(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            completed = true;
+            connection.Break();
+            throw new PgException($"Command timeout expired. timeout=[{commandTimeout}]");
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -436,9 +456,35 @@ public sealed class PgDataReader : DbDataReader
     //--------------------------------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ref PgColumnInfo GetColumnRef(int ordinal)
+    {
+        if ((uint)ordinal >= (uint)fieldCount)
+        {
+            ThrowIndexOutOfRange();
+        }
+
+        return ref Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(columns), ordinal);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetLength(int ordinal)
+    {
+        if ((uint)ordinal >= (uint)fieldCount)
+        {
+            ThrowIndexOutOfRange();
+        }
+
+        return Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(lengths), ordinal);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    // ReSharper disable once NotResolvedInText
+    private static void ThrowIndexOutOfRange() => throw new ArgumentOutOfRangeException("ordinal");
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ReadOnlySpan<byte> GetValueSpan(int ordinal)
     {
-        var length = lengths[ordinal];
+        var length = GetLength(ordinal);
         if (length == -1)
         {
             throw new InvalidCastException("Value is NULL");
@@ -447,14 +493,14 @@ public sealed class PgDataReader : DbDataReader
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsBinaryFormat(int ordinal) => columns[ordinal].FormatCode == FormatBinary;
+    private bool IsBinaryFormat(int ordinal) => GetColumnRef(ordinal).FormatCode == FormatBinary;
 
     //--------------------------------------------------------------------------------
     // Field metadata
     //--------------------------------------------------------------------------------
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override bool IsDBNull(int ordinal) => lengths[ordinal] == -1;
+    public override bool IsDBNull(int ordinal) => GetLength(ordinal) == -1;
 
     public override Task<bool> IsDBNullAsync(int ordinal, CancellationToken cancellationToken)
     {
@@ -463,19 +509,19 @@ public sealed class PgDataReader : DbDataReader
 
     public override string GetDataTypeName(int ordinal)
     {
-        var typeOid = columns[ordinal].TypeOid;
+        var typeOid = GetColumnRef(ordinal).TypeOid;
         return OidToTypeNameMap.GetValueOrDefault(typeOid, "unknown");
     }
 
     public override Type GetFieldType(int ordinal)
     {
-        var typeOid = columns[ordinal].TypeOid;
+        var typeOid = GetColumnRef(ordinal).TypeOid;
         return OidToTypeMap.TryGetValue(typeOid, out var type) ? type : typeof(object);
     }
 
     public override string GetName(int ordinal)
     {
-        return columns[ordinal].Name;
+        return GetColumnRef(ordinal).Name;
     }
 
     public override int GetOrdinal(string name)
@@ -504,7 +550,7 @@ public sealed class PgDataReader : DbDataReader
             return DBNull.Value;
         }
 
-        var typeOid = columns[ordinal].TypeOid;
+        var typeOid = GetColumnRef(ordinal).TypeOid;
         return typeOid switch
         {
             OidBool => GetBoolean(ordinal),
