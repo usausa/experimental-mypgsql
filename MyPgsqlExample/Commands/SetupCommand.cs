@@ -11,6 +11,7 @@ using NpgsqlBulkHelper;
 using Smart.CommandLine.Hosting;
 
 [Command("setup", "Database setup")]
+#pragma warning disable CA1724
 public sealed class SetupCommand : BaseCommand, ICommandHandler
 {
     public async ValueTask ExecuteAsync(CommandContext context)
@@ -75,6 +76,7 @@ public sealed class SetupCommand : BaseCommand, ICommandHandler
     }
 #pragma warning restore CA2100
 
+#pragma warning disable CA1034
     public class Data
     {
         public int Id { get; set; }
@@ -87,4 +89,6 @@ public sealed class SetupCommand : BaseCommand, ICommandHandler
 
         public DateTime CreatedAt { get; set; }
     }
+#pragma warning restore CA1034
 }
+#pragma warning restore CA1724

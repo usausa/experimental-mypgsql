@@ -438,7 +438,7 @@ public sealed class PgDataReader : DbDataReader
     private static string ParseErrorMessage(ReadOnlySpan<byte> payload)
     {
         var offset = 0;
-        while (offset < payload.Length && payload[offset] != 0)
+        while ((offset < payload.Length) && (payload[offset] != 0))
         {
             var fieldType = (char)payload[offset++];
             var end = payload[offset..].IndexOf((byte)0);
@@ -592,7 +592,7 @@ public sealed class PgDataReader : DbDataReader
         {
             return span[0] != 0;
         }
-        return span.Length > 0 && (span[0] == 't' || span[0] == '1');
+        return (span.Length > 0) && ((span[0] == 't') || (span[0] == '1'));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

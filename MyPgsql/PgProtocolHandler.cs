@@ -49,7 +49,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (socket is not null && socket.Connected)
+        if ((socket is not null) && socket.Connected)
         {
             var terminate = new byte[5];
             terminate[0] = (byte)'X';
@@ -407,7 +407,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
         // Binary encode
 
         var value = parameter.Value;
-        if (value is null || value == DBNull.Value)
+        if ((value is null) || (value == DBNull.Value))
         {
             return ([], -1, 0); // NULL
         }
@@ -992,7 +992,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     {
         var message = Encoding.UTF8.GetString(payload.TrimEnd((byte)0));
         var lastSpace = message.LastIndexOf(' ');
-        if (lastSpace >= 0 && int.TryParse(message.AsSpan(lastSpace + 1), out var count))
+        if ((lastSpace >= 0) && Int32.TryParse(message.AsSpan(lastSpace + 1), out var count))
         {
             return count;
         }
@@ -1002,7 +1002,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
     private static string ParseErrorMessage(ReadOnlySpan<byte> payload)
     {
         var offset = 0;
-        while (offset < payload.Length && payload[offset] != 0)
+        while ((offset < payload.Length) && (payload[offset] != 0))
         {
             var fieldType = (char)payload[offset++];
             var end = payload[offset..].IndexOf((byte)0);
