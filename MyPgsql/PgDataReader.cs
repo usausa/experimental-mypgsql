@@ -38,6 +38,7 @@ public sealed class PgDataReader : DbDataReader
     // Properties
     //--------------------------------------------------------------------------------
 
+#pragma warning disable IDE0032
     public override bool IsClosed => isClosed;
 
     public override int Depth => 0;
@@ -51,6 +52,7 @@ public sealed class PgDataReader : DbDataReader
     public override object this[int ordinal] => GetValue(ordinal);
 
     public override object this[string name] => GetValue(GetOrdinal(name));
+#pragma warning restore IDE0032
 
     //--------------------------------------------------------------------------------
     // Constructor
@@ -571,7 +573,9 @@ public sealed class PgDataReader : DbDataReader
     private byte[] GetBytea(int ordinal)
     {
         var span = GetValueSpan(ordinal);
+#pragma warning disable IDE0028
         return span.ToArray();
+#pragma warning restore IDE0028
     }
 
     public override int GetValues(object[] values)

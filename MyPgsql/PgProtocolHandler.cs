@@ -932,7 +932,7 @@ internal sealed partial class PgProtocolHandler : IAsyncDisposable
 
         if (length == 0)
         {
-            return (type, Array.Empty<byte>(), 0);
+            return (type, [], 0);
         }
 
         var buffer = ArrayPool<byte>.Shared.Rent(length);
