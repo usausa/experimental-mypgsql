@@ -573,9 +573,7 @@ public sealed class PgDataReader : DbDataReader
     private byte[] GetBytea(int ordinal)
     {
         var span = GetValueSpan(ordinal);
-#pragma warning disable IDE0028
         return span.ToArray();
-#pragma warning restore IDE0028
     }
 
     public override int GetValues(object[] values)
