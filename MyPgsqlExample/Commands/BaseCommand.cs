@@ -16,7 +16,7 @@ public abstract class BaseCommand
     [Option<string>("--username", "-u", Description = "Username", DefaultValue = "test")]
     public string Username { get; set; } = default!;
 
-    [Option<string>("--password", "-p", Description = "Password", DefaultValue = "test")]
+    [Option<string>("--password", Description = "Password", DefaultValue = "test")]
     public string Password { get; set; } = default!;
 
     protected string ConnectionString =>
